@@ -189,20 +189,42 @@ def test_prometheus_scrapes_the_traefik_metrics_port():
     assert "traefik:8082" in targets
 
 
-# ----------------------------------------------------------------- watchtower
-def test_watchtower_is_opt_in_and_uses_the_maintained_fork():
-    wt = compose("stack-management")["services"]["watchtower"]
-    assert "containrrr" not in wt["image"], "containrrr/watchtower está arquivado e quebra com Docker 29+"
-    assert str(wt["environment"]["WATCHTOWER_LABEL_ENABLE"]).lower() == "true"
+# ----------------------------------------------------------------- versões fixas
+FLOATING_TAGS = {"latest", "lts", "stable", "main", "master", "develop", "dev", "nightly", "edge", "testing", "preview"}
 
 
-def test_critical_services_are_not_auto_updated():
+def all_images():
     for stack in ALL_STACKS:
         for name, svc in compose(stack)["services"].items():
-            if name in CRITICAL:
-                assert labels_of(svc).get("com.centurylinklabs.watchtower.enable") != "true", (
-                    f"{stack}/{name}: serviço crítico não deve ter atualização automática"
-                )
+            yield stack, name, svc["image"]
+
+
+def test_every_image_is_pinned_to_an_explicit_version():
+    """Sem :latest/:lts/:stable. O Dependabot propõe as atualizações como PR."""
+    for stack, name, image in all_images():
+        repo, _, tag = image.rpartition(":")
+        assert repo and "/" not in tag, f"{stack}/{name}: imagem sem tag ({image})"
+        assert tag not in FLOATING_TAGS, f"{stack}/{name}: tag flutuante ({image})"
+        assert re.search(r"\d", tag), f"{stack}/{name}: a tag deveria conter uma versão ({image})"
+
+
+def test_watchtower_was_removed():
+    """Com tags fixas o Watchtower não faz nada (ele só re-baixa a mesma tag) e exigia docker.sock em escrita."""
+    text = " ".join((ROOT / s / "docker-compose.yml").read_text(encoding="utf-8").lower() for s in ALL_STACKS)
+    assert "watchtower" not in text
+
+
+def test_recyclarr_is_pinned_to_a_v8_release():
+    """O Recyclarr não publica mais a tag 'latest' (desde 8.4.0) e o trash_id em perfis só existe na v8+."""
+    image = compose("stack-media")["services"]["recyclarr"]["image"]
+    m = re.fullmatch(r"ghcr\.io/recyclarr/recyclarr:(\d+)\.\d+\.\d+", image)
+    assert m and int(m.group(1)) >= 8, image
+
+
+def test_images_use_the_registries_that_actually_publish_them():
+    images = {name: image for _, name, image in all_images() if name in {"unpackerr", "seerr", "flaresolverr"}}
+    assert images["unpackerr"].startswith("ghcr.io/unpackerr/unpackerr:"), "o Docker Hub do Unpackerr é opcional"
+    assert images["seerr"].startswith("ghcr.io/seerr-team/seerr:")
 
 
 # ----------------------------------------------------------------- mídia

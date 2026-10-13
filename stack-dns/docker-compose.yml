@@ -1,6 +1,6 @@
 services:
   pihole-unbound:
-    image: mpgirro/pihole-unbound:2026.06.0   # confirme/atualize a tag em hub.docker.com/r/mpgirro/pihole-unbound
+    image: mpgirro/pihole-unbound:2026.09.0   # tag = versão do Pi-hole (rebuild semanal do Unbound); o Dependabot propõe as próximas
     container_name: pihole_unbound
     hostname: ${NODE_NAME:?defina NODE_NAME no .env}
     restart: unless-stopped
@@ -23,7 +23,7 @@ services:
       - ${CONFIG_DIR}/pihole:/etc/pihole
 
   tailscale:
-    image: tailscale/tailscale:stable
+    image: tailscale/tailscale:v1.104.0
     container_name: tailscale
     restart: unless-stopped
     network_mode: host
@@ -44,7 +44,7 @@ services:
   # ---------- Opcionais (ative com --profile) ----------
   node-exporter:
     profiles: ["monitoring"]
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.12.1
     container_name: node_exporter
     restart: unless-stopped
     network_mode: host
@@ -57,7 +57,7 @@ services:
 
   portainer-agent:
     profiles: ["agent"]
-    image: portainer/agent:lts       # mantenha na mesma linha de versão do Portainer Server
+    image: portainer/agent:2.45.1       # sempre a MESMA versão do Portainer Server (stack-management)
     container_name: portainer_agent
     restart: unless-stopped
     mem_limit: 64m

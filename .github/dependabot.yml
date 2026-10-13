@@ -4,8 +4,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
 
-  # Só gera PRs para imagens com tag FIXA (traefik, pihole-unbound...). Imagens ":latest" não geram PR.
+  # Todas as imagens estão com tag FIXA, então o Dependabot propõe cada atualização como PR.
+  # O CI (compose config + testes + images.yml) valida o PR antes de você mesclar.
   - package-ecosystem: docker-compose
     directories:
       - /stack-dns
@@ -14,3 +17,13 @@ updates:
       - /stack-monitoring
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7          # espera 7 dias após o lançamento antes de propor
+    groups:
+      linuxserver:             # as imagens linuxserver têm rebuild semanal: um PR só
+        patterns:
+          - "lscr.io/linuxserver/*"
+      monitoring:
+        patterns:
+          - "prom/*"
+          - "grafana/*"

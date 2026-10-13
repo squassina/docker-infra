@@ -2,7 +2,7 @@
 
 Documentação e arquivos de implantação (Docker Compose) para um homelab distribuído em três servidores físicos: dois nós de DNS/acesso remoto e um servidor central de mídia, automação, proxy e monitoramento.
 
-> **Revisado em 12/10/2026.** Versões, nomes de variáveis e imagens foram conferidos contra a documentação upstream nessa data. Os pontos que **não** foi possível validar estão listados na seção [10](#-10-pontos-em-aberto-e-a-verificar).
+> **Revisado em 13/10/2026.** Versões, nomes de variáveis e imagens foram conferidos contra a documentação upstream nessa data, e **todas as imagens estão com versão fixa** (seção 9). Os pontos que **não** foi possível validar estão listados na seção [10](#-10-pontos-em-aberto-e-a-verificar).
 
 ---
 
@@ -40,7 +40,7 @@ Documentação e arquivos de implantação (Docker Compose) para um homelab dist
 - **Servidores 1 e 2:** `Pi-hole` + `Unbound` (um container) e `Tailscale`.
 - **Servidor 3:**
   - **Mídia e automação:** `qBittorrent`, `Flaresolverr`, `Prowlarr`, `Sonarr`, `Radarr`, `Lidarr`, `Bazarr`, `Unpackerr`, `Recyclarr`, `Jellyfin`, `Seerr`, `Navidrome`.
-  - **Infraestrutura:** `Traefik v3`, `Watchtower` (fork mantido), `Portainer`, `Homepage`.
+  - **Infraestrutura:** `Traefik v3`, `Portainer`, `Homepage`.
   - **Monitoramento:** `Prometheus`, `Grafana`, `node-exporter`.
 
 ### Como as peças se conectam
@@ -84,7 +84,7 @@ flowchart LR
 * **Decisão:** manter os dois.
 
 ### C. Proxy reverso e TLS: Traefik + Cloudflare DNS-01
-* **Traefik v3.6 ou superior.** Versões anteriores usam um cliente da API do Docker antigo e **deixam de enxergar os containers com Docker Engine 29+** (erro `client version 1.24 is too old`).
+* **Traefik v3.6.1 ou superior** (fixado em `v3.7.x`). Versões anteriores usam um cliente da API do Docker antigo e **deixam de enxergar os containers com Docker Engine 29+** (erro `client version 1.24 is too old`).
 * **Certificado wildcard** (`*.seu-dominio.com`) em vez de um certificado por subdomínio: evita emitir um certificado a cada serviço novo e **não publica seus hostnames internos nos logs públicos de Certificate Transparency**.
 * **Resolvers públicos para o desafio DNS-01** (`1.1.1.1`, `1.0.0.1`): como o Pi-hole responde `*.seu-dominio.com` localmente, usar o DNS da LAN para validar o `_acme-challenge` faria a verificação de propagação falhar.
 * **Token da Cloudflare** com escopo mínimo: `Zone:Zone:Read` + `Zone:DNS:Edit`, restrito à zona do domínio.
@@ -94,7 +94,8 @@ flowchart LR
 * **Unpackerr:** extrai `.rar`/`.zip` baixados pelo qBittorrent para importação pelo Sonarr/Radarr.
 * **Recyclarr:** sincroniza perfis de qualidade e custom formats do TRaSH Guides. Os perfis são referenciados por `trash_id` e trazem seus custom formats junto, em vez de uma lista manual de IDs.
 * **Seerr** substitui o Jellyseerr: os projetos Overseerr e Jellyseerr foram unificados no **Seerr** (imagem `ghcr.io/seerr-team/seerr`); a migração dos dados é automática no primeiro boot.
-* **Watchtower:** o `containrrr/watchtower` está **arquivado (17/12/2025)** e quebra com Docker Engine 29+. Usamos o fork mantido (`nickfedor/watchtower`) em modo **opt-in por label**: só atualiza containers marcados. Traefik, Pi-hole, Portainer e a stack de monitoramento **não** são atualizados automaticamente, porque mudanças de versão maior neles quebram a infraestrutura inteira.
+* **Versões fixas + Dependabot (sem Watchtower):** todas as imagens usam tag explícita. O Watchtower atualiza re-baixando a *mesma* tag, então com versões fixas ele não faria nada (e exigia `docker.sock` com escrita), por isso foi removido. Quem propõe as atualizações é o **Dependabot**, como PR; o CI valida o PR (`compose config`, testes e existência da imagem para `arm64`/`arm/v7`) e, ao mesclar, você aplica com `scripts/update.sh`. Detalhes na seção 9.
+* **Recyclarr:** desde a 8.4.0 não existe mais a tag `latest`; a versão fixa é obrigatória. O `trash_id` em perfis de qualidade também só existe a partir da 8.0.
 
 ### E. Estratégia de backup
 Backup de imagem do SO é ineficiente para containers. O que importa é `CONFIG_DIR`, os `.env` e os arquivos Compose, com backup incremental, criptografado e deduplicado via **Restic**. A seção 8 traz um script pronto, com política de retenção e o lembrete de **testar a restauração**.
@@ -283,7 +284,7 @@ TS_AUTHKEY=                   # tskey-auth-...; só é necessária no 1º start
 ```yaml
 services:
   pihole-unbound:
-    image: mpgirro/pihole-unbound:2026.06.0   # confirme/atualize a tag em hub.docker.com/r/mpgirro/pihole-unbound
+    image: mpgirro/pihole-unbound:2026.09.0   # tag = versão do Pi-hole (rebuild semanal do Unbound); o Dependabot propõe as próximas
     container_name: pihole_unbound
     hostname: ${NODE_NAME:?defina NODE_NAME no .env}
     restart: unless-stopped
@@ -306,7 +307,7 @@ services:
       - ${CONFIG_DIR}/pihole:/etc/pihole
 
   tailscale:
-    image: tailscale/tailscale:stable
+    image: tailscale/tailscale:v1.104.0
     container_name: tailscale
     restart: unless-stopped
     network_mode: host
@@ -327,7 +328,7 @@ services:
   # ---------- Opcionais (ative com --profile) ----------
   node-exporter:
     profiles: ["monitoring"]
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.12.1
     container_name: node_exporter
     restart: unless-stopped
     network_mode: host
@@ -340,7 +341,7 @@ services:
 
   portainer-agent:
     profiles: ["agent"]
-    image: portainer/agent:lts       # mantenha na mesma linha de versão do Portainer Server
+    image: portainer/agent:2.45.1       # sempre a MESMA versão do Portainer Server (stack-management)
     container_name: portainer_agent
     restart: unless-stopped
     mem_limit: 64m
@@ -368,7 +369,7 @@ networks:
 
 services:
   traefik:
-    image: traefik:v3.6      # >= 3.6.1 é necessário com Docker Engine 29+
+    image: traefik:v3.7.12   # >= 3.6.1 é necessário com Docker Engine 29+
     container_name: traefik
     restart: unless-stopped
     security_opt:
@@ -428,20 +429,8 @@ services:
       # Middleware reutilizável por outras stacks: traefik-auth@docker
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:?defina TRAEFIK_DASHBOARD_AUTH no .env}"
 
-  watchtower:
-    image: nickfedor/watchtower:latest   # fork mantido; fixe uma versão após validar
-    container_name: watchtower
-    restart: unless-stopped
-    environment:
-      TZ: ${TZ}
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_LABEL_ENABLE: "true"        # só atualiza containers com a label enable=true
-      WATCHTOWER_SCHEDULE: "0 0 4 * * *"     # todo dia às 04:00
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
   portainer:
-    image: portainer/portainer-ce:lts
+    image: portainer/portainer-ce:2.45.1   # linha LTS (2.45)
     container_name: portainer
     restart: unless-stopped
     security_opt:
@@ -461,7 +450,7 @@ services:
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
   homepage:
-    image: ghcr.io/gethomepage/homepage:latest
+    image: ghcr.io/gethomepage/homepage:v2.4.0
     container_name: homepage
     restart: unless-stopped
     networks:
@@ -502,9 +491,6 @@ x-env: &env
   PGID: ${PGID}
   TZ: ${TZ}
 
-x-wt: &wt                                  # opt-in do Watchtower
-  com.centurylinklabs.watchtower.enable: "true"
-
 x-arr: &arr
   restart: unless-stopped
   networks:
@@ -520,7 +506,7 @@ networks:
 services:
   qbittorrent:
     <<: *arr
-    image: lscr.io/linuxserver/qbittorrent:latest
+    image: lscr.io/linuxserver/qbittorrent:5.1.4-r3-ls453
     container_name: qbittorrent
     ports:
       - "6881:6881"          # porta de peers (a WebUI sai só pelo Traefik)
@@ -532,7 +518,6 @@ services:
       - ${CONFIG_DIR:?defina CONFIG_DIR no .env}/qbittorrent:/config
       - ${DATA_DIR:?defina DATA_DIR no .env}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.qbittorrent.rule: "Host(`qbit.${MY_DOMAIN}`)"
@@ -540,7 +525,7 @@ services:
       traefik.http.services.qbittorrent.loadbalancer.server.port: "8080"
 
   flaresolverr:
-    image: flaresolverr/flaresolverr:latest
+    image: flaresolverr/flaresolverr:v3.5.2
     container_name: flaresolverr
     restart: unless-stopped
     mem_limit: 1g            # o Chromium interno pode vazar memória
@@ -549,19 +534,16 @@ services:
     environment:
       LOG_LEVEL: info
       TZ: ${TZ}
-    labels:
-      <<: *wt
 
   prowlarr:
     <<: *arr
-    image: lscr.io/linuxserver/prowlarr:latest
+    image: lscr.io/linuxserver/prowlarr:2.6.5.5623-ls163
     container_name: prowlarr
     environment:
       <<: *env
     volumes:
       - ${CONFIG_DIR}/prowlarr:/config
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.prowlarr.rule: "Host(`prowlarr.${MY_DOMAIN}`)"
@@ -570,7 +552,7 @@ services:
 
   sonarr:
     <<: *arr
-    image: lscr.io/linuxserver/sonarr:latest
+    image: lscr.io/linuxserver/sonarr:4.0.20.3014-ls328
     container_name: sonarr
     environment:
       <<: *env
@@ -579,7 +561,6 @@ services:
       - ${CONFIG_DIR}/sonarr:/config
       - ${DATA_DIR}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.sonarr.rule: "Host(`sonarr.${MY_DOMAIN}`)"
@@ -588,7 +569,7 @@ services:
 
   radarr:
     <<: *arr
-    image: lscr.io/linuxserver/radarr:latest
+    image: lscr.io/linuxserver/radarr:6.4.4.10685-ls320
     container_name: radarr
     environment:
       <<: *env
@@ -597,7 +578,6 @@ services:
       - ${CONFIG_DIR}/radarr:/config
       - ${DATA_DIR}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.radarr.rule: "Host(`radarr.${MY_DOMAIN}`)"
@@ -606,7 +586,7 @@ services:
 
   lidarr:
     <<: *arr
-    image: lscr.io/linuxserver/lidarr:latest
+    image: lscr.io/linuxserver/lidarr:3.1.0.4875-ls43
     container_name: lidarr
     environment:
       <<: *env
@@ -614,7 +594,6 @@ services:
       - ${CONFIG_DIR}/lidarr:/config
       - ${DATA_DIR}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.lidarr.rule: "Host(`lidarr.${MY_DOMAIN}`)"
@@ -623,7 +602,7 @@ services:
 
   bazarr:
     <<: *arr
-    image: lscr.io/linuxserver/bazarr:latest
+    image: lscr.io/linuxserver/bazarr:v1.6.2-ls367
     container_name: bazarr
     environment:
       <<: *env
@@ -631,7 +610,6 @@ services:
       - ${CONFIG_DIR}/bazarr:/config
       - ${DATA_DIR}/media:/data/media     # mesmos caminhos que Sonarr/Radarr enxergam
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.bazarr.rule: "Host(`bazarr.${MY_DOMAIN}`)"
@@ -639,7 +617,7 @@ services:
       traefik.http.services.bazarr.loadbalancer.server.port: "6767"
 
   unpackerr:
-    image: golift/unpackerr:latest
+    image: ghcr.io/unpackerr/unpackerr:0.16.1
     container_name: unpackerr
     restart: unless-stopped
     user: "${PUID}:${PGID}"          # arquivos extraídos com o dono correto
@@ -657,11 +635,9 @@ services:
       UN_RADARR_0_PATHS_0: /data/torrents/movies
     volumes:
       - ${DATA_DIR}/torrents:/data/torrents
-    labels:
-      <<: *wt
 
   recyclarr:
-    image: ghcr.io/recyclarr/recyclarr:latest
+    image: ghcr.io/recyclarr/recyclarr:8.7.3
     container_name: recyclarr
     restart: unless-stopped
     user: "${PUID}:${PGID}"
@@ -674,11 +650,9 @@ services:
     volumes:
       - ${CONFIG_DIR}/recyclarr:/config                          # estado/cache
       - ../recyclarr/recyclarr.yml:/config/recyclarr.yml:ro      # config versionada no repo
-    labels:
-      <<: *wt
 
   jellyfin:
-    image: jellyfin/jellyfin:latest   # imagem oficial: traz os drivers Rockchip MPP/RGA/OpenCL
+    image: jellyfin/jellyfin:12.2   # imagem oficial: traz os drivers Rockchip MPP/RGA/OpenCL
     container_name: jellyfin
     restart: unless-stopped
     user: "${PUID}:${PGID}"
@@ -703,7 +677,6 @@ services:
       - /dev/rga:/dev/rga
       - /dev/mali0:/dev/mali0
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.jellyfin.rule: "Host(`jellyfin.${MY_DOMAIN}`)"
@@ -711,7 +684,7 @@ services:
       traefik.http.services.jellyfin.loadbalancer.server.port: "8096"
 
   seerr:
-    image: ghcr.io/seerr-team/seerr:latest
+    image: ghcr.io/seerr-team/seerr:v3.5.0
     container_name: seerr
     init: true
     restart: unless-stopped
@@ -723,7 +696,6 @@ services:
     volumes:
       - ${CONFIG_DIR}/seerr:/app/config    # o container sempre roda como UID 1000: chown 1000:1000
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.seerr.rule: "Host(`seerr.${MY_DOMAIN}`)"
@@ -732,7 +704,7 @@ services:
 
   navidrome:
     <<: *arr
-    image: deluan/navidrome:latest
+    image: deluan/navidrome:0.64.2
     container_name: navidrome
     user: "${PUID}:${PGID}"
     environment:
@@ -743,7 +715,6 @@ services:
       - ${CONFIG_DIR}/navidrome:/data
       - ${DATA_DIR}/media/music:/music:ro
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.navidrome.rule: "Host(`music.${MY_DOMAIN}`)"
@@ -799,7 +770,7 @@ networks:
 
 services:
   prometheus:
-    image: prom/prometheus:latest      # fixe uma versão após validar
+    image: prom/prometheus:v3.15.0      # fixe uma versão após validar
     container_name: prometheus
     restart: unless-stopped
     networks:
@@ -824,7 +795,7 @@ services:
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
 
   grafana:
-    image: grafana/grafana:latest      # fixe uma versão após validar
+    image: grafana/grafana:13.2.3      # fixe uma versão após validar
     container_name: grafana
     restart: unless-stopped
     networks:
@@ -844,7 +815,7 @@ services:
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.12.1
     container_name: node_exporter
     restart: unless-stopped
     network_mode: host
@@ -973,7 +944,7 @@ getent group video render
 ```bash
 docker network create proxy-net                       # 1) rede compartilhada (uma vez)
 
-cd stack-management && docker compose up -d           # 2) Traefik, Portainer, Homepage, Watchtower
+cd stack-management && docker compose up -d           # 2) Traefik, Portainer, Homepage
 cd ../stack-media      && docker compose up -d        # 3) mídia
 cd ../stack-monitoring && docker compose up -d        # 4) monitoramento
 ```
@@ -1065,7 +1036,7 @@ restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
 restic check --read-data-subset=5%
 ```
 
-Agende antes da janela do Watchtower (04:00), por exemplo às 03:15:
+Agende em horário de pouco uso, por exemplo às 03:15 (ele para a stack de mídia durante o backup):
 
 ```cron
 15 3 * * * /opt/docker-infra/scripts/backup.sh >> /var/log/homelab-backup.log 2>&1
@@ -1081,14 +1052,29 @@ Os Pi-holes são quase "sem estado": os Compose + `.env` bastam para recriá-los
 
 ## 🔄 9. Atualizações e Manutenção
 
-- **Automático (opt-in):** apenas containers com a label `com.centurylinklabs.watchtower.enable=true` (apps de mídia) são atualizados às 04:00.
-- **Manual e deliberado:** Traefik, Pi-hole/Unbound, Portainer, Prometheus e Grafana. Leia o *release notes*, depois:
-  ```bash
-  docker compose pull && docker compose up -d
-  ```
-- **Fixe versões** (`image: nome:1.2.3`) assim que a stack estiver estável; `:latest` em tudo dificulta reverter uma atualização ruim. Considere o **Diun** se preferir só ser *notificado* de novas imagens.
-- **Antes de atualizar** o Docker Engine, confira a compatibilidade de Traefik/Watchtower (a mudança do Docker 29 quebrou vários containers).
-- **Limpeza:** `docker image prune -f` (o Watchtower já faz com `WATCHTOWER_CLEANUP`).
+**Todas as imagens têm versão fixa** (`image: nome:1.2.3`). Assim o que está no Git é exatamente o que roda, e voltar atrás é um `git revert`.
+
+**Como as versões foram escolhidas (13/10/2026):** a versão estável mais recente com **pelo menos 7 dias** de lançada (período de "decantação"), lida dos repositórios upstream. As imagens `linuxserver` usam a tag exata `<versão>-lsNNN`, porque têm rebuild semanal. Para Pi-hole, a tag é a versão do Pi-hole (`2026.09.0`); o mantenedor reconstrói essa tag toda semana com o Unbound atualizado, e a tag imutável (`…-unboundX.Y.Z-rN`) existe se você quiser travar também o Unbound.
+
+**Fluxo de atualização**
+
+1. O **Dependabot** abre PRs semanais (imagens `linuxserver` agrupadas em um só; `prom/*` e `grafana/*` em outro), esperando 7 dias após cada lançamento (`cooldown`).
+2. O **CI valida o PR**: `docker compose config`, testes e o job `Images`, que confere se a nova tag existe e tem build para a sua arquitetura.
+3. Você lê o *release notes*, mescla e, no servidor:
+   ```bash
+   scripts/update.sh            # Servidor 3 (management -> media -> monitoring)
+   scripts/update.sh --dns      # Servidores 1 e 2
+   ```
+   O script faz `git pull`, `docker compose pull`, `up -d --remove-orphans` e limpa imagens antigas.
+4. **Voltar atrás:** `git revert <commit>` e `scripts/update.sh`.
+
+**Cuidados**
+- **Saltos de versão maior** (Jellyfin, Grafana, Homepage, Portainer, Recyclarr) merecem leitura do release notes e **backup antes** (`scripts/backup.sh`). O Jellyfin, por exemplo, exige parar o servidor e fazer backup antes de migrar de 10.11 para 12.
+- **Portainer Server e Agent na mesma versão** (hoje `2.45.1`): atualize os dois juntos.
+- **Antes de atualizar o Docker Engine**, confira a compatibilidade do Traefik (a mudança do Docker 29 quebrou vários containers).
+- **Pi-hole/Unbound:** `docker compose pull` no nó traz o Unbound corrigido mesmo sem mudar a tag.
+- **Limpeza:** `scripts/update.sh` já roda `docker image prune -f`.
+- **Migrando de uma instalação com Watchtower:** o `update.sh` remove o container órfão (`--remove-orphans`); se preferir, `docker rm -f watchtower`.
 
 ---
 
@@ -1097,11 +1083,11 @@ Os Pi-holes são quase "sem estado": os Compose + `.env` bastam para recriá-los
 Itens que **não foram testados em hardware** ou dependem de versão:
 
 1. **Raspberry Pi 3 com 512 MB?** Confirme o modelo (seção 1).
-2. **Tag da imagem `mpgirro/pihole-unbound`** (`2026.06.0`): confirme a mais recente e que há build `arm/v7` para o NanoPi (`docker buildx imagetools inspect mpgirro/pihole-unbound:<tag>`). Planeje a migração do NanoPi para um SBC arm64 — `armv7` está em fim de vida em muitas imagens.
+2. **Tags fixas não conferidas no registry.** As versões vieram das tags/releases upstream (o ambiente de revisão não alcança Docker Hub/GHCR). O job **`Images`** do CI confere se cada tag existe e se há build `arm64` (Servidor 3) e `arm/v7` (NanoPi, `mpgirro/pihole-unbound` e `tailscale`); **rode-o antes do primeiro `up`**. Se o NanoPi não tiver build `arm/v7`, planeje migrá-lo para um SBC arm64.
 3. **Portainer `--http-enabled`:** o comportamento padrão da porta 9000 varia entre versões. Se o Portainer rejeitar a flag, remova-a e use a 9443 com `scheme=https`.
 4. **Nomes exatos dos devices do Jellyfin/RK3588** (`/dev/mali0`, `/dev/rga`, ...) variam conforme a imagem do SO; o container não sobe se algum device listado não existir.
 5. **`UN_*_PATHS_0` do Unpackerr** e **`SONARR__AUTH__APIKEY`**: confirme no primeiro start (`docker logs`) que foram aceitos.
-6. **Socket proxy, nebula-sync e fixação de versões:** recomendados, mas não incluídos como padrão por exigirem validação no seu ambiente.
+6. **Jellyfin 12.x e Homepage 2.x** são linhas novas (agosto/2026). Confirme na primeira subida que a aceleração RKMPP continua funcionando no Jellyfin 12 e, no Homepage, que o portão de autenticação opcional da v2 não está ativo sem você querer.
 7. **Ponto único de falha:** DNS é redundante (dois nós), mas o Traefik e todos os serviços dependem do Servidor 3. Se ele cair, as interfaces ficam indisponíveis mesmo com o DNS funcionando.
 8. **Uso de torrents:** se usar trackers públicos, avalie rotear o qBittorrent por uma VPN (por exemplo, com `gluetun`) e verifique a legalidade do uso na sua jurisdição.
 
@@ -1112,8 +1098,8 @@ Itens que **não foram testados em hardware** ou dependem de versão:
 | Sintoma | Causa provável | Ação |
 |---|---|---|
 | `variable is not set` / valores vazios | `.env` não está na pasta da stack | Crie os symlinks (seção 4) |
-| Traefik não lista nenhum container; log `client version 1.24 is too old` | Traefik < 3.6.1 com Docker 29+ | Use `traefik:v3.6` ou superior |
-| Watchtower reinicia em loop (`client version 1.25 is too old`) | Imagem `containrrr` arquivada | Use `nickfedor/watchtower` |
+| Traefik não lista nenhum container; log `client version 1.24 is too old` | Traefik < 3.6.1 com Docker 29+ | Use `traefik:v3.6.1` ou superior (o repositório usa 3.7.x) |
+| `manifest unknown` / `not found` ao dar `pull` | Tag fixa que não existe (digitada à mão ou removida do registry) | Rode `make images` (ou o job `Images` do CI) e corrija a tag |
 | Certificado não é emitido; erro de propagação do TXT | O resolver da LAN responde o domínio localmente | Confirme `dnschallenge.resolvers=1.1.1.1:53,...` e o token (Zone:Read + DNS:Edit) |
 | `404 page not found` no Traefik | Falta label, `Host()` errado ou serviço fora da `proxy-net` | `docker logs traefik`; confira labels e redes |
 | `Host(...)` resolve para IP errado | Registro local ausente nos Pi-holes | Verifique `FTLCONF_misc_dnsmasq_lines` e teste com `dig` |
@@ -1140,7 +1126,7 @@ O repositório traz testes e validações que rodam **sem Docker daemon, sem seg
 | **Nenhum `.env` versionado** | `validate.yml` › lint | Segredo commitado por engano |
 | **`docker compose config`** em cada stack (todos os profiles) | `validate.yml` › compose | Sintaxe, âncoras/merge keys, interpolação, `variable is not set` |
 | **Guardas `${VAR:?}`** | `scripts/validate_compose.sh` | Remove uma variável obrigatória e exige que o Compose **falhe** |
-| **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, Watchtower em opt-in e fora dos serviços críticos, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
+| **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, **todas as imagens com versão fixa** (sem `latest`/`lts`/`stable`), Watchtower ausente, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr v8, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
 | **README em sincronia** | `validate.yml` › docs | Blocos de código do README diferentes dos arquivos |
 | **gitleaks** | `validate.yml` › secrets | Segredos no histórico do git |
 | **Imagens e arquiteturas** | `images.yml` (semanal) | Imagem removida/renomeada ou sem build `arm64`/`arm/v7` |

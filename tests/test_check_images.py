@@ -30,11 +30,13 @@ def test_satisfies_accepts_arm64_variant():
 
 def test_collect_images_assigns_the_right_platform_per_stack():
     images = ci.collect_images()
-    assert images["traefik:v3.6"] == {"linux/arm64"}
+    traefik = next(i for i in images if i.startswith("traefik:v3."))
+    assert images[traefik] == {"linux/arm64"}
     pihole = next(i for i in images if i.startswith("mpgirro/pihole-unbound"))
     assert images[pihole] == {"linux/arm/v7"}
     # prom/node-exporter aparece nos Pis (armv7) e no Servidor 3 (arm64)
-    assert images["prom/node-exporter:latest"] == {"linux/arm/v7", "linux/arm64"}
+    node = next(i for i in images if i.startswith("prom/node-exporter:"))
+    assert images[node] == {"linux/arm/v7", "linux/arm64"}
 
 
 def test_check_reports_missing_platform(monkeypatch):

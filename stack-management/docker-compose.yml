@@ -4,7 +4,7 @@ networks:
 
 services:
   traefik:
-    image: traefik:v3.6      # >= 3.6.1 é necessário com Docker Engine 29+
+    image: traefik:v3.7.12   # >= 3.6.1 é necessário com Docker Engine 29+
     container_name: traefik
     restart: unless-stopped
     security_opt:
@@ -64,20 +64,8 @@ services:
       # Middleware reutilizável por outras stacks: traefik-auth@docker
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:?defina TRAEFIK_DASHBOARD_AUTH no .env}"
 
-  watchtower:
-    image: nickfedor/watchtower:latest   # fork mantido; fixe uma versão após validar
-    container_name: watchtower
-    restart: unless-stopped
-    environment:
-      TZ: ${TZ}
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_LABEL_ENABLE: "true"        # só atualiza containers com a label enable=true
-      WATCHTOWER_SCHEDULE: "0 0 4 * * *"     # todo dia às 04:00
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
   portainer:
-    image: portainer/portainer-ce:lts
+    image: portainer/portainer-ce:2.45.1   # linha LTS (2.45)
     container_name: portainer
     restart: unless-stopped
     security_opt:
@@ -97,7 +85,7 @@ services:
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
   homepage:
-    image: ghcr.io/gethomepage/homepage:latest
+    image: ghcr.io/gethomepage/homepage:v2.4.0
     container_name: homepage
     restart: unless-stopped
     networks:
