@@ -1155,6 +1155,6 @@ make images       # (rede + docker buildx) imagens existem para arm64/armv7?
 
 **Os arquivos são a fonte da verdade.** Os blocos de código deste README (marcados com `<!-- file: caminho -->`) são gerados a partir dos arquivos do repositório. Depois de editar um Compose ou `.env.example`, rode `make sync` para atualizar o README; o CI falha se os dois divergirem.
 
-**Branch protection (recomendado):** em *Settings → Branches*, exija o check **`CI ok`** antes de aceitar merges em `main`.
+**Branch protection (recomendado):** em *Settings → Branches*, exija o check **`CI ok`** antes de aceitar merges na branch padrão (`master` ou `main`).
 
 **O que o CI não cobre:** ele não sobe os containers, então não detecta erro de runtime (por exemplo, a flag do Portainer, os devices do RK3588 ou a emissão real do certificado). Veja a seção 10.
