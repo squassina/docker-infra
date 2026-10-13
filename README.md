@@ -40,7 +40,7 @@ Documentação e arquivos de implantação (Docker Compose) para um homelab dist
 - **Servidores 1 e 2:** `Pi-hole` + `Unbound` (um container) e `Tailscale`.
 - **Servidor 3:**
   - **Mídia e automação:** `qBittorrent`, `Flaresolverr`, `Prowlarr`, `Sonarr`, `Radarr`, `Lidarr`, `Bazarr`, `Unpackerr`, `Recyclarr`, `Jellyfin`, `Seerr`, `Navidrome`.
-  - **Infraestrutura:** `Traefik v3`, `Portainer`, `Homepage`.
+  - **Infraestrutura:** `Traefik v3`, `socket-proxy` (×2), `Portainer`, `Homepage`.
   - **Monitoramento:** `Prometheus`, `Grafana`, `node-exporter`.
 
 ### Como as peças se conectam
@@ -236,6 +236,13 @@ GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=
 
 # ==========================================
+# SOCKET PROXY (acesso restrito ao Docker)
+# GID do grupo 'docker' do host:  getent group docker | cut -d: -f3
+# (o scripts/setup.sh preenche se estiver vazio)
+# ==========================================
+DOCKER_GID=
+
+# ==========================================
 # GIDs do host p/ acesso aos devices do Jellyfin
 # Confira com:  getent group video render
 # ==========================================
@@ -366,8 +373,78 @@ services:
 networks:
   proxy-net:
     external: true      # criada manualmente: docker network create proxy-net
+  # Redes INTERNAS (sem saída): cada cliente fala só com o seu socket-proxy
+  socket-traefik:
+    internal: true
+  socket-homepage:
+    internal: true
 
 services:
+  # ---------- Acesso restrito ao Docker (no lugar de montar o docker.sock no Traefik/Homepage) ----------
+  # Allowlist por método HTTP, só o container cliente consegue conectar (-allowfrom),
+  # sem rede externa, sem capabilities, sistema de arquivos somente leitura.
+  socket-proxy-traefik:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: socket-proxy-traefik
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker)}"
+    mem_limit: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "-loglevel=info"
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=traefik"
+      - '-allowGET=/v1\..{1,2}/(version|containers/.*|events.*)'
+      - "-allowHEAD=/_ping"          # obrigatório com Traefik >= 3.6.1
+      - "-allowhealthcheck"
+      - "-watchdoginterval=3600"
+      - "-stoponwatchdog"
+      - "-shutdowngracetime=5"
+    healthcheck:
+      test: ["CMD", "./healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-traefik
+
+  socket-proxy-homepage:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: socket-proxy-homepage
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker)}"
+    mem_limit: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "-loglevel=info"
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=homepage"
+      # só leitura: lista de containers, inspeção e estatísticas
+      - '-allowGET=(/v1\..{1,2})?/containers/(json|[^/]+/(json|stats))'
+      - "-allowhealthcheck"
+      - "-watchdoginterval=3600"
+      - "-stoponwatchdog"
+      - "-shutdowngracetime=5"
+    healthcheck:
+      test: ["CMD", "./healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-homepage
+
   traefik:
     image: traefik:v3.7.12   # >= 3.6.1 é necessário com Docker Engine 29+
     container_name: traefik
@@ -376,6 +453,10 @@ services:
       - no-new-privileges:true
     networks:
       - proxy-net
+      - socket-traefik
+    depends_on:
+      socket-proxy-traefik:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -389,6 +470,7 @@ services:
       - "--log.level=INFO"
       # Docker provider
       - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://socket-proxy-traefik:2375"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=proxy-net"
       # Entrypoints + redirecionamento HTTP -> HTTPS
@@ -418,7 +500,6 @@ services:
       timeout: 5s
       retries: 3
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONFIG_DIR}/traefik/letsencrypt:/letsencrypt
     labels:
       - "traefik.enable=true"
@@ -455,21 +536,46 @@ services:
     restart: unless-stopped
     networks:
       - proxy-net
+      - socket-homepage
+    depends_on:
+      socket-proxy-homepage:
+        condition: service_healthy
     environment:
       PUID: ${PUID}
       PGID: ${PGID}
       HOMEPAGE_ALLOWED_HOSTS: home.${MY_DOMAIN}   # sem isso, o Homepage recusa o acesso por hostname
     volumes:
-      - ${CONFIG_DIR}/homepage:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONFIG_DIR}/homepage:/app/config      # docker.yaml aponta para socket-proxy-homepage:2375 (ver README)
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
       - "traefik.http.routers.homepage.rule=Host(`home.${MY_DOMAIN}`)"
       - "traefik.http.routers.homepage.entrypoints=websecure"
       - "traefik.http.services.homepage.loadbalancer.server.port=3000"
 ```
 
-**Segurança do socket do Docker (melhoria opcional).** Montar `docker.sock` — mesmo como `:ro` — dá a Traefik, Homepage, Portainer e Watchtower controle efetivo sobre o host. Para Traefik e Homepage, considere um *socket proxy* (por exemplo, `tecnativa/docker-socket-proxy`) que só libera os endpoints de leitura necessários, e aponte `--providers.docker.endpoint=tcp://socket-proxy:2375`. Teste em ambiente separado: os endpoints mínimos exigidos variam por versão do Traefik.
+**Acesso restrito ao Docker (socket-proxy).** Montar `docker.sock` num container equivale a dar root no host, e o `:ro` **não** limita a API (o próprio Traefik removeu o `:ro` dos exemplos da documentação por ser enganoso). Por isso Traefik e Homepage **não montam o socket**: falam com um `wollomatic/socket-proxy` dedicado, que só repassa as chamadas de leitura de que cada um precisa.
+
+| | `socket-proxy-traefik` | `socket-proxy-homepage` |
+|---|---|---|
+| Quem pode conectar | só o container `traefik` | só o container `homepage` |
+| `GET` permitido | `version`, `containers/*`, `events` | `containers/json`, `containers/<nome>/json`, `containers/<nome>/stats` |
+| Outros métodos | só `HEAD /_ping` (**obrigatório com Traefik ≥ 3.6.1**; sem isso o provider cai numa versão de API errada) | nenhum |
+| Rede | `socket-traefik` (interna, sem saída) | `socket-homepage` (interna, sem saída) |
+| Hardening | usuário `65534:<DOCKER_GID>`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 64 MB, watchdog | idem |
+
+Não há `POST`/`PUT`/`DELETE`: ninguém por trás de um proxy consegue criar, iniciar ou apagar containers. Com isso, **só o Portainer (e o Agent) mantêm o socket completo**, porque gerenciam containers por definição. Restrinja o acesso a ele (senha forte, e nada de expor na internet).
+
+- **`DOCKER_GID`** (GID do grupo `docker` do host) é obrigatório: o proxy roda sem root e precisa ler o socket. O `scripts/setup.sh` detecta e grava no `.env`; manualmente: `getent group docker | cut -d: -f3`.
+- **Homepage:** em `${CONFIG_DIR}/homepage/docker.yaml`, aponte para o proxy (e não para o socket):
+  ```yaml
+  socket-proxy:
+    host: socket-proxy-homepage
+    port: 2375
+  ```
+  e, nos serviços, use `server: socket-proxy` / `container: <nome>`.
+- **Depurar:** se algo for bloqueado, o log do proxy mostra a rota negada: `docker logs socket-proxy-traefik`. Para descobrir o que um cliente novo precisa, suba temporariamente o proxy com `-loglevel=debug` e `-allowGET=.*` em ambiente confiável e leia as requisições.
+- A regra do Traefik segue a recomendada pelo projeto socket-proxy (`GET` de `version`, `containers/*` e `events` + `HEAD /_ping`). A do Homepage é minha, restrita ao que o dockerode usa (lista, inspeção, estatísticas); veja a seção 10.
 
 ---
 
@@ -1088,8 +1194,9 @@ Itens que **não foram testados em hardware** ou dependem de versão:
 4. **Nomes exatos dos devices do Jellyfin/RK3588** (`/dev/mali0`, `/dev/rga`, ...) variam conforme a imagem do SO; o container não sobe se algum device listado não existir.
 5. **`UN_*_PATHS_0` do Unpackerr** e **`SONARR__AUTH__APIKEY`**: confirme no primeiro start (`docker logs`) que foram aceitos.
 6. **Jellyfin 12.x e Homepage 2.x** são linhas novas (agosto/2026). Confirme na primeira subida que a aceleração RKMPP continua funcionando no Jellyfin 12 e, no Homepage, que o portão de autenticação opcional da v2 não está ativo sem você querer.
-7. **Ponto único de falha:** DNS é redundante (dois nós), mas o Traefik e todos os serviços dependem do Servidor 3. Se ele cair, as interfaces ficam indisponíveis mesmo com o DNS funcionando.
-8. **Uso de torrents:** se usar trackers públicos, avalie rotear o qBittorrent por uma VPN (por exemplo, com `gluetun`) e verifique a legalidade do uso na sua jurisdição.
+7. **Regras do socket-proxy.** A do Traefik segue o README upstream; a do Homepage foi desenhada por mim para o que ele usa (lista/inspeção/estatísticas) e é coberta por testes de caminhos permitidos/negados, mas não foi exercitada com o Homepage real. Se algum widget de Docker ficar sem dados, veja `docker logs socket-proxy-homepage`.
+8. **Ponto único de falha:** DNS é redundante (dois nós), mas o Traefik e todos os serviços dependem do Servidor 3. Se ele cair, as interfaces ficam indisponíveis mesmo com o DNS funcionando.
+9. **Uso de torrents:** se usar trackers públicos, avalie rotear o qBittorrent por uma VPN (por exemplo, com `gluetun`) e verifique a legalidade do uso na sua jurisdição.
 
 ---
 
@@ -1099,6 +1206,8 @@ Itens que **não foram testados em hardware** ou dependem de versão:
 |---|---|---|
 | `variable is not set` / valores vazios | `.env` não está na pasta da stack | Crie os symlinks (seção 4) |
 | Traefik não lista nenhum container; log `client version 1.24 is too old` | Traefik < 3.6.1 com Docker 29+ | Use `traefik:v3.6.1` ou superior (o repositório usa 3.7.x) |
+| Traefik sem containers; log `permission denied`/`403`/`Cannot connect to the Docker daemon` | socket-proxy bloqueando uma rota, ou `DOCKER_GID` errado | `docker logs socket-proxy-traefik`; confira `getent group docker` e o `DOCKER_GID` do `.env` |
+| `socket-proxy-*` reinicia: `permission denied` em `/var/run/docker.sock` | `DOCKER_GID` não é o do grupo `docker` do host | Corrija o `DOCKER_GID` e `docker compose up -d` |
 | `manifest unknown` / `not found` ao dar `pull` | Tag fixa que não existe (digitada à mão ou removida do registry) | Rode `make images` (ou o job `Images` do CI) e corrija a tag |
 | Certificado não é emitido; erro de propagação do TXT | O resolver da LAN responde o domínio localmente | Confirme `dnschallenge.resolvers=1.1.1.1:53,...` e o token (Zone:Read + DNS:Edit) |
 | `404 page not found` no Traefik | Falta label, `Host()` errado ou serviço fora da `proxy-net` | `docker logs traefik`; confira labels e redes |
@@ -1126,7 +1235,7 @@ O repositório traz testes e validações que rodam **sem Docker daemon, sem seg
 | **Nenhum `.env` versionado** | `validate.yml` › lint | Segredo commitado por engano |
 | **`docker compose config`** em cada stack (todos os profiles) | `validate.yml` › compose | Sintaxe, âncoras/merge keys, interpolação, `variable is not set` |
 | **Guardas `${VAR:?}`** | `scripts/validate_compose.sh` | Remove uma variável obrigatória e exige que o Compose **falhe** |
-| **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, **todas as imagens com versão fixa** (sem `latest`/`lts`/`stable`), Watchtower ausente, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr v8, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
+| **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, **todas as imagens com versão fixa**, **socket-proxy** (allowlist: caminhos permitidos/negados, só o cliente conecta, redes internas, `docker.sock` só nos proxies/Portainer) (sem `latest`/`lts`/`stable`), Watchtower ausente, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr v8, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
 | **README em sincronia** | `validate.yml` › docs | Blocos de código do README diferentes dos arquivos |
 | **gitleaks** | `validate.yml` › secrets | Segredos no histórico do git |
 | **Imagens e arquiteturas** | `images.yml` (semanal) | Imagem removida/renomeada ou sem build `arm64`/`arm/v7` |

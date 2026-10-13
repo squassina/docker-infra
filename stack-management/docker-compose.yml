@@ -1,8 +1,78 @@
 networks:
   proxy-net:
     external: true      # criada manualmente: docker network create proxy-net
+  # Redes INTERNAS (sem saída): cada cliente fala só com o seu socket-proxy
+  socket-traefik:
+    internal: true
+  socket-homepage:
+    internal: true
 
 services:
+  # ---------- Acesso restrito ao Docker (no lugar de montar o docker.sock no Traefik/Homepage) ----------
+  # Allowlist por método HTTP, só o container cliente consegue conectar (-allowfrom),
+  # sem rede externa, sem capabilities, sistema de arquivos somente leitura.
+  socket-proxy-traefik:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: socket-proxy-traefik
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker)}"
+    mem_limit: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "-loglevel=info"
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=traefik"
+      - '-allowGET=/v1\..{1,2}/(version|containers/.*|events.*)'
+      - "-allowHEAD=/_ping"          # obrigatório com Traefik >= 3.6.1
+      - "-allowhealthcheck"
+      - "-watchdoginterval=3600"
+      - "-stoponwatchdog"
+      - "-shutdowngracetime=5"
+    healthcheck:
+      test: ["CMD", "./healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-traefik
+
+  socket-proxy-homepage:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: socket-proxy-homepage
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker)}"
+    mem_limit: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "-loglevel=info"
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=homepage"
+      # só leitura: lista de containers, inspeção e estatísticas
+      - '-allowGET=(/v1\..{1,2})?/containers/(json|[^/]+/(json|stats))'
+      - "-allowhealthcheck"
+      - "-watchdoginterval=3600"
+      - "-stoponwatchdog"
+      - "-shutdowngracetime=5"
+    healthcheck:
+      test: ["CMD", "./healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-homepage
+
   traefik:
     image: traefik:v3.7.12   # >= 3.6.1 é necessário com Docker Engine 29+
     container_name: traefik
@@ -11,6 +81,10 @@ services:
       - no-new-privileges:true
     networks:
       - proxy-net
+      - socket-traefik
+    depends_on:
+      socket-proxy-traefik:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -24,6 +98,7 @@ services:
       - "--log.level=INFO"
       # Docker provider
       - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://socket-proxy-traefik:2375"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=proxy-net"
       # Entrypoints + redirecionamento HTTP -> HTTPS
@@ -53,7 +128,6 @@ services:
       timeout: 5s
       retries: 3
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONFIG_DIR}/traefik/letsencrypt:/letsencrypt
     labels:
       - "traefik.enable=true"
@@ -90,15 +164,19 @@ services:
     restart: unless-stopped
     networks:
       - proxy-net
+      - socket-homepage
+    depends_on:
+      socket-proxy-homepage:
+        condition: service_healthy
     environment:
       PUID: ${PUID}
       PGID: ${PGID}
       HOMEPAGE_ALLOWED_HOSTS: home.${MY_DOMAIN}   # sem isso, o Homepage recusa o acesso por hostname
     volumes:
-      - ${CONFIG_DIR}/homepage:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONFIG_DIR}/homepage:/app/config      # docker.yaml aponta para socket-proxy-homepage:2375 (ver README)
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
       - "traefik.http.routers.homepage.rule=Host(`home.${MY_DOMAIN}`)"
       - "traefik.http.routers.homepage.entrypoints=websecure"
       - "traefik.http.services.homepage.loadbalancer.server.port=3000"

@@ -148,7 +148,8 @@ def test_traefik_services_are_on_proxy_net_and_pin_the_network():
     for stack, name, svc, lab in traefik_services():
         nets = networks_of(svc)
         assert "proxy-net" in nets, f"{stack}/{name}: tem labels do Traefik mas não está na proxy-net"
-        if len(nets) > 1:
+        has_backend = any(k.endswith("loadbalancer.server.port") for k in lab)   # api@internal não tem backend
+        if len(nets) > 1 and has_backend:
             assert lab.get("traefik.docker.network") == "proxy-net", (
                 f"{stack}/{name}: está em várias redes; defina traefik.docker.network=proxy-net"
             )
@@ -338,3 +339,88 @@ def test_env_examples_contain_only_placeholders(example):
 def test_gitignore_blocks_env_files():
     lines = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
     assert ".env" in lines and "**/.env" in lines
+
+
+# ----------------------------------------------------------------- socket proxy
+SOCKET_USERS = {"traefik": "socket-proxy-traefik", "homepage": "socket-proxy-homepage"}
+
+
+def _proxy_flags(name: str) -> dict:
+    """{'allowGET': [regex...], 'allowfrom': 'traefik', ...} a partir do command do socket-proxy."""
+    flags: dict = {}
+    for item in compose("stack-management")["services"][name]["command"]:
+        key, _, val = item.lstrip("-").partition("=")
+        flags.setdefault(key, []).append(val)
+    return flags
+
+
+def _allowed(name: str, method: str, path: str) -> bool:
+    """O socket-proxy coloca ^...$ em volta do padrão (regex do Go, compatível com re.fullmatch aqui)."""
+    patterns = _proxy_flags(name).get(f"allow{method}", [])
+    return any(re.fullmatch(p, path) for p in patterns)
+
+
+def test_docker_socket_is_mounted_only_by_the_proxies_and_portainer():
+    holders = set()
+    for stack in ALL_STACKS:
+        for name, svc in compose(stack)["services"].items():
+            if any("docker.sock" in str(v) for v in svc.get("volumes", [])):
+                holders.add(name)
+    # portainer-agent precisa do socket completo (gerencia os nós); portainer idem
+    assert holders == {"socket-proxy-traefik", "socket-proxy-homepage", "portainer", "portainer-agent"}, holders
+
+
+def test_traefik_reads_docker_through_its_socket_proxy():
+    svc = compose("stack-management")["services"]["traefik"]
+    cmd = " ".join(svc["command"])
+    assert "--providers.docker.endpoint=tcp://socket-proxy-traefik:2375" in cmd
+    assert not any("docker.sock" in str(v) for v in svc["volumes"])
+    assert svc["depends_on"]["socket-proxy-traefik"]["condition"] == "service_healthy"
+
+
+@pytest.mark.parametrize("client,proxy", SOCKET_USERS.items())
+def test_socket_proxy_is_locked_down(client, proxy):
+    cfg = compose("stack-management")
+    svc, flags = cfg["services"][proxy], _proxy_flags(proxy)
+    assert flags["allowfrom"] == [client], "só o cliente pode conectar"
+    assert cfg["services"][client].get("container_name", client) == client, "allowfrom resolve pelo nome do container"
+    assert not (set(flags) & {"allowPOST", "allowPUT", "allowDELETE", "allowPATCH", "allowCONNECT"}), "somente leitura"
+    assert svc["read_only"] is True and svc["cap_drop"] == ["ALL"]
+    assert "ports" not in svc and "expose" not in svc
+    assert svc["user"].startswith("65534:") and "DOCKER_GID" in svc["user"]
+    assert svc["image"].startswith("wollomatic/socket-proxy:1.")
+    # rede própria e INTERNA; fora da proxy-net (que tem as UIs publicadas)
+    net = next(iter(svc["networks"]))
+    assert svc["networks"] == [net] and cfg["networks"][net]["internal"] is True
+    assert "proxy-net" not in svc["networks"]
+    assert net in cfg["services"][client]["networks"]
+
+
+def test_traefik_socket_proxy_requires_the_head_ping_rule():
+    """Traefik >= 3.6.1 faz HEAD /_ping; sem a regra ele cai numa versão de API errada e o provider quebra."""
+    assert "/_ping" in _proxy_flags("socket-proxy-traefik")["allowHEAD"]
+
+
+def test_traefik_proxy_allowlist_matches_what_traefik_needs_and_nothing_else():
+    p = "socket-proxy-traefik"
+    for ok in ("/v1.51/version", "/v1.51/containers/json", "/v1.51/containers/0123abcd/json", "/v1.51/events"):
+        assert _allowed(p, "GET", ok), ok
+    for bad in ("/v1.51/images/json", "/v1.51/info", "/v1.51/volumes", "/v1.51/networks", "/v1.51/secrets", "/version"):
+        assert not _allowed(p, "GET", bad), bad
+    assert not _allowed(p, "POST", "/v1.51/containers/create")
+
+
+def test_homepage_proxy_allows_only_container_list_inspect_and_stats():
+    p = "socket-proxy-homepage"
+    for ok in ("/containers/json", "/v1.51/containers/json", "/containers/sonarr/json", "/containers/sonarr/stats"):
+        assert _allowed(p, "GET", ok), ok
+    for bad in ("/containers/sonarr/archive", "/containers/sonarr/logs", "/containers/sonarr/exec",
+                "/images/json", "/info", "/volumes", "/containers/a/b/json"):
+        assert not _allowed(p, "GET", bad), bad
+    assert not _allowed(p, "POST", "/containers/sonarr/exec")
+
+
+def test_docker_gid_is_required_and_listed():
+    assert "DOCKER_GID" in parse_env(ROOT / ".env.example")
+    text = (ROOT / "stack-management/docker-compose.yml").read_text(encoding="utf-8")
+    assert "${DOCKER_GID:?" in text
