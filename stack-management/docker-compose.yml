@@ -4,7 +4,7 @@ networks:
 
 services:
   traefik:
-    image: traefik:v3.6      # >= 3.6.1 é necessário com Docker Engine 29+
+    image: traefik:v3.7      # >= 3.6.1 é necessário com Docker Engine 29+
     container_name: traefik
     restart: unless-stopped
     security_opt:
