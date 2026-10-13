@@ -1,0 +1,12 @@
+extends: default
+
+ignore: |
+  .git/
+
+rules:
+  line-length: disable           # labels do Traefik e comentários ficam longos
+  document-start: disable        # compose não usa '---'
+  comments-indentation: disable  # blocos comentados (seedbox, opções) ficam alinhados ao exemplo
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false

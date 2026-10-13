@@ -1,0 +1,68 @@
+services:
+  pihole-unbound:
+    image: mpgirro/pihole-unbound:2026.06.0   # confirme/atualize a tag em hub.docker.com/r/mpgirro/pihole-unbound
+    container_name: pihole_unbound
+    hostname: ${NODE_NAME:?defina NODE_NAME no .env}
+    restart: unless-stopped
+    mem_limit: 320m          # protege SSH/Tailscale em 512 MB; ajuste após medir (docker stats)
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "80:80/tcp"
+    environment:
+      TZ: ${TZ}
+      FTLCONF_webserver_api_password: "${PIHOLE_ADMIN_PASSWORD:?defina PIHOLE_ADMIN_PASSWORD no .env}"
+      FTLCONF_dns_listeningMode: all            # obrigatório em rede bridge (Pi-hole v6)
+      FTLCONF_dns_upstreams: "127.0.0.1#5335"   # Unbound embutido
+      FTLCONF_dns_dnssec: "true"
+      # Encaminhamento condicional: nomes da LAN vão para o roteador
+      FTLCONF_dns_revServers: "true,${SUBNET_CIDR},${ROUTER_IP},${LOCAL_DOMAIN}"
+      # Todo *.seu-dominio.com aponta para o Traefik (Servidor 3)
+      FTLCONF_misc_dnsmasq_lines: "address=/${MY_DOMAIN:?defina MY_DOMAIN no .env}/${SERVER3_IP:?defina SERVER3_IP no .env}"
+    volumes:
+      - ${CONFIG_DIR}/pihole:/etc/pihole
+
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: tailscale
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ${CONFIG_DIR}/tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_HOSTNAME: ${NODE_NAME}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "false"        # o próprio nó de DNS não deve usar o DNS da tailnet (evita loop)
+      TS_ROUTES: ${LAN_ROUTES}      # anuncia a LAN; aprove a rota no painel do Tailscale
+
+  # ---------- Opcionais (ative com --profile) ----------
+  node-exporter:
+    profiles: ["monitoring"]
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+      - "--web.listen-address=${NODE_IP}:9100"
+    volumes:
+      - /:/host:ro,rslave
+
+  portainer-agent:
+    profiles: ["agent"]
+    image: portainer/agent:lts       # mantenha na mesma linha de versão do Portainer Server
+    container_name: portainer_agent
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "${NODE_IP}:9001:9001"       # não exponha em 0.0.0.0: o agent controla o Docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes

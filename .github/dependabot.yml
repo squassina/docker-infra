@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Só gera PRs para imagens com tag FIXA (traefik, pihole-unbound...). Imagens ":latest" não geram PR.
+  - package-ecosystem: docker-compose
+    directories:
+      - /stack-dns
+      - /stack-management
+      - /stack-media
+      - /stack-monitoring
+    schedule:
+      interval: weekly

@@ -1,0 +1,62 @@
+networks:
+  monitoring-net:
+    driver: bridge
+  proxy-net:
+    external: true
+
+services:
+  prometheus:
+    image: prom/prometheus:latest      # fixe uma versão após validar
+    container_name: prometheus
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+      - proxy-net                      # p/ coletar o Traefik (traefik:8082) e para a rota HTTPS
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # alcança o node-exporter do próprio host
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"   # limita o crescimento do disco
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${CONFIG_DIR}/prometheus/data:/prometheus     # chown 65534:65534
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.${MY_DOMAIN}`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.routers.prometheus.middlewares=traefik-auth@docker"   # o Prometheus não tem login próprio
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+
+  grafana:
+    image: grafana/grafana:latest      # fixe uma versão após validar
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - monitoring-net
+      - proxy-net
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?defina GRAFANA_ADMIN_PASSWORD no .env}"
+      GF_SERVER_ROOT_URL: https://grafana.${MY_DOMAIN}
+    volumes:
+      - ${CONFIG_DIR}/grafana:/var/lib/grafana       # chown 472:472
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.${MY_DOMAIN}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - /:/host:ro,rslave

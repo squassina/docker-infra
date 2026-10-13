@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: node-orangepi
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+        labels:
+          instance: "orangepi5plus"
+
+  - job_name: node-dns            # requer: docker compose --profile monitoring up -d nos Pis
+    static_configs:
+      - targets: ["192.168.1.10:9100"]
+        labels:
+          instance: "nanopi-neo"
+      - targets: ["192.168.1.11:9100"]
+        labels:
+          instance: "raspberrypi3"
+
+  - job_name: traefik
+    static_configs:
+      - targets: ["traefik:8082"]

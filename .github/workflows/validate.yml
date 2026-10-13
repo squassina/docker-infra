@@ -1,0 +1,106 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (yamllint, shellcheck, .env)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: yamllint
+        run: |
+          pip install --quiet yamllint
+          yamllint -s .
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Nenhum .env real versionado
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::Arquivo .env versionado. Remova-o do git (git rm --cached) e troque os segredos."
+            exit 1
+          fi
+
+  compose:
+    name: Compose config (${{ matrix.stack }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [stack-management, stack-media, stack-monitoring, stack-dns]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose config + guardas de variáveis obrigatórias
+        run: scripts/validate_compose.sh ${{ matrix.stack }}
+
+  tests:
+    name: Testes de convenções (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - run: pip install --quiet -r tests/requirements.txt
+
+      - run: python -m pytest tests -v
+
+  docs:
+    name: README em sincronia com os arquivos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python scripts/sync_readme.py --check
+
+  secrets:
+    name: Varredura de segredos (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Gratuito em repositórios pessoais; organizações precisam de GITLEAKS_LICENSE.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  ci-ok:
+    name: CI ok
+    if: always()
+    needs: [lint, compose, tests, docs, secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Todos os jobs passaram?
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::Algum job falhou"; exit 1
+          fi

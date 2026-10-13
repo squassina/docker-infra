@@ -1,0 +1,32 @@
+name: Images
+
+# Confere se as imagens existem no registry e têm build para a arquitetura da placa
+# (arm64 no Orange Pi 5 Plus, arm/v7 no NanoPi NEO). Roda toda segunda-feira porque
+# imagens podem ser removidas, renomeadas ou perder suporte a ARM sem aviso.
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "stack-*/docker-compose.yml"
+      - "scripts/check_images.py"
+      - ".github/workflows/images.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Imagens e arquiteturas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet pyyaml
+
+      - run: python scripts/check_images.py

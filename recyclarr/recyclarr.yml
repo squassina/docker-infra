@@ -1,0 +1,35 @@
+# ==========================================
+# SONARR
+# ==========================================
+sonarr:
+  series:
+    base_url: http://sonarr:8989
+    api_key: !env_var SONARR_API_KEY
+
+    include:
+      - template: sonarr-quality-definition-series   # tamanhos de arquivo (TRaSH)
+
+    quality_profiles:
+      - trash_id: 72dae194fc92bf828f32cde7744e51a1   # WEB-1080p
+        reset_unmatched_scores:
+          enabled: true
+      # Para 4K, liste o perfil desejado:  recyclarr list quality-profiles sonarr
+
+# ==========================================
+# RADARR
+# ==========================================
+radarr:
+  movies:
+    base_url: http://radarr:7878
+    api_key: !env_var RADARR_API_KEY
+
+    include:
+      - template: radarr-quality-definition-movie
+
+    quality_profiles:
+      - trash_id: d1d67249d3890e49bc12e275d989a7e9   # HD Bluray + WEB
+        reset_unmatched_scores:
+          enabled: true
+      # - trash_id: 64fb5f9858489bdac2af690e27c8f42f   # UHD Bluray + WEB (4K)
+      #   reset_unmatched_scores:
+      #     enabled: true

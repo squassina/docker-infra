@@ -1,0 +1,274 @@
+# ---------- Blocos reutilizáveis ----------
+x-env: &env
+  PUID: ${PUID}
+  PGID: ${PGID}
+  TZ: ${TZ}
+
+x-wt: &wt                                  # opt-in do Watchtower
+  com.centurylinklabs.watchtower.enable: "true"
+
+x-arr: &arr
+  restart: unless-stopped
+  networks:
+    - media-net
+    - proxy-net
+
+networks:
+  media-net:
+    driver: bridge
+  proxy-net:
+    external: true
+
+services:
+  qbittorrent:
+    <<: *arr
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    ports:
+      - "6881:6881"          # porta de peers (a WebUI sai só pelo Traefik)
+      - "6881:6881/udp"
+    environment:
+      <<: *env
+      WEBUI_PORT: "8080"
+    volumes:
+      - ${CONFIG_DIR:?defina CONFIG_DIR no .env}/qbittorrent:/config
+      - ${DATA_DIR:?defina DATA_DIR no .env}:/data
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.qbittorrent.rule: "Host(`qbit.${MY_DOMAIN}`)"
+      traefik.http.routers.qbittorrent.entrypoints: websecure
+      traefik.http.services.qbittorrent.loadbalancer.server.port: "8080"
+
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    mem_limit: 1g            # o Chromium interno pode vazar memória
+    networks:
+      - media-net
+    environment:
+      LOG_LEVEL: info
+      TZ: ${TZ}
+    labels:
+      <<: *wt
+
+  prowlarr:
+    <<: *arr
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_DIR}/prowlarr:/config
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.prowlarr.rule: "Host(`prowlarr.${MY_DOMAIN}`)"
+      traefik.http.routers.prowlarr.entrypoints: websecure
+      traefik.http.services.prowlarr.loadbalancer.server.port: "9696"
+
+  sonarr:
+    <<: *arr
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      <<: *env
+      SONARR__AUTH__APIKEY: "${SONARR_API_KEY:?defina SONARR_API_KEY no .env}"   # chave previsível; o Recyclarr/Unpackerr usam a mesma
+    volumes:
+      - ${CONFIG_DIR}/sonarr:/config
+      - ${DATA_DIR}:/data
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.sonarr.rule: "Host(`sonarr.${MY_DOMAIN}`)"
+      traefik.http.routers.sonarr.entrypoints: websecure
+      traefik.http.services.sonarr.loadbalancer.server.port: "8989"
+
+  radarr:
+    <<: *arr
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      <<: *env
+      RADARR__AUTH__APIKEY: "${RADARR_API_KEY:?defina RADARR_API_KEY no .env}"
+    volumes:
+      - ${CONFIG_DIR}/radarr:/config
+      - ${DATA_DIR}:/data
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.radarr.rule: "Host(`radarr.${MY_DOMAIN}`)"
+      traefik.http.routers.radarr.entrypoints: websecure
+      traefik.http.services.radarr.loadbalancer.server.port: "7878"
+
+  lidarr:
+    <<: *arr
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_DIR}/lidarr:/config
+      - ${DATA_DIR}:/data
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.lidarr.rule: "Host(`lidarr.${MY_DOMAIN}`)"
+      traefik.http.routers.lidarr.entrypoints: websecure
+      traefik.http.services.lidarr.loadbalancer.server.port: "8686"
+
+  bazarr:
+    <<: *arr
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_DIR}/bazarr:/config
+      - ${DATA_DIR}/media:/data/media     # mesmos caminhos que Sonarr/Radarr enxergam
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.bazarr.rule: "Host(`bazarr.${MY_DOMAIN}`)"
+      traefik.http.routers.bazarr.entrypoints: websecure
+      traefik.http.services.bazarr.loadbalancer.server.port: "6767"
+
+  unpackerr:
+    image: golift/unpackerr:latest
+    container_name: unpackerr
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"          # arquivos extraídos com o dono correto
+    networks:
+      - media-net
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: ${TZ}
+      UN_SONARR_0_URL: http://sonarr:8989
+      UN_SONARR_0_API_KEY: ${SONARR_API_KEY}
+      UN_SONARR_0_PATHS_0: /data/torrents/tv
+      UN_RADARR_0_URL: http://radarr:7878
+      UN_RADARR_0_API_KEY: ${RADARR_API_KEY}
+      UN_RADARR_0_PATHS_0: /data/torrents/movies
+    volumes:
+      - ${DATA_DIR}/torrents:/data/torrents
+    labels:
+      <<: *wt
+
+  recyclarr:
+    image: ghcr.io/recyclarr/recyclarr:latest
+    container_name: recyclarr
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    networks:
+      - media-net
+    environment:
+      TZ: ${TZ}
+      SONARR_API_KEY: ${SONARR_API_KEY}   # lidas por !env_var no recyclarr.yml
+      RADARR_API_KEY: ${RADARR_API_KEY}
+    volumes:
+      - ${CONFIG_DIR}/recyclarr:/config                          # estado/cache
+      - ../recyclarr/recyclarr.yml:/config/recyclarr.yml:ro      # config versionada no repo
+    labels:
+      <<: *wt
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest   # imagem oficial: traz os drivers Rockchip MPP/RGA/OpenCL
+    container_name: jellyfin
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    group_add:
+      - "${VIDEO_GID}"
+      - "${RENDER_GID}"
+    networks:
+      - media-net
+      - proxy-net
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ${CONFIG_DIR}/jellyfin/config:/config
+      - ${CONFIG_DIR}/jellyfin/cache:/cache
+      - ${DATA_DIR}/media:/data/media:ro
+    # Aceleração por hardware no RK3588 = RKMPP (+ RGA e OpenCL/Mali p/ tone mapping).
+    # Todos os devices abaixo precisam existir no host (ls -l /dev | grep -E "mpp|rga|dri|dma_heap|mali").
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mpp_service:/dev/mpp_service
+      - /dev/rga:/dev/rga
+      - /dev/mali0:/dev/mali0
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.jellyfin.rule: "Host(`jellyfin.${MY_DOMAIN}`)"
+      traefik.http.routers.jellyfin.entrypoints: websecure
+      traefik.http.services.jellyfin.loadbalancer.server.port: "8096"
+
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    restart: unless-stopped
+    networks:
+      - media-net
+      - proxy-net
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ${CONFIG_DIR}/seerr:/app/config    # o container sempre roda como UID 1000: chown 1000:1000
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.seerr.rule: "Host(`seerr.${MY_DOMAIN}`)"
+      traefik.http.routers.seerr.entrypoints: websecure
+      traefik.http.services.seerr.loadbalancer.server.port: "5055"
+
+  navidrome:
+    <<: *arr
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    user: "${PUID}:${PGID}"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 24h
+    volumes:
+      - ${CONFIG_DIR}/navidrome:/data
+      - ${DATA_DIR}/media/music:/music:ro
+    labels:
+      <<: *wt
+      traefik.enable: "true"
+      traefik.docker.network: proxy-net
+      traefik.http.routers.navidrome.rule: "Host(`music.${MY_DOMAIN}`)"
+      traefik.http.routers.navidrome.entrypoints: websecure
+      traefik.http.services.navidrome.loadbalancer.server.port: "4533"
+
+  # ==========================================
+  # SEEDBOX (DESATIVADA — imagens ainda são placeholders)
+  # Quando houver imagens reais, prefira `profiles: ["seedbox"]` a comentários.
+  # ==========================================
+  # seedbox-backend:
+  #   image: sua-imagem-seedbox-backend:latest
+  #   container_name: seedbox_backend
+  #   restart: unless-stopped
+  #   networks: [media-net]
+  #   volumes:
+  #     - ${CONFIG_DIR}/seedbox-backend:/config
+  #
+  # seedbox-frontend:
+  #   image: sua-imagem-seedbox-frontend:latest
+  #   container_name: seedbox_frontend
+  #   restart: unless-stopped
+  #   networks: [media-net, proxy-net]
+  #   labels:
+  #     traefik.enable: "true"
+  #     # ... router/serviço na porta 3000
