@@ -40,7 +40,7 @@ Documentação e arquivos de implantação (Docker Compose) para um homelab dist
 - **Servidores 1 e 2:** `Pi-hole` + `Unbound` (um container) e `Tailscale`.
 - **Servidor 3:**
   - **Mídia e automação:** `qBittorrent`, `Flaresolverr`, `Prowlarr`, `Sonarr`, `Radarr`, `Lidarr`, `Bazarr`, `Unpackerr`, `Recyclarr`, `Jellyfin`, `Seerr`, `Navidrome`.
-  - **Infraestrutura:** `Traefik v3`, `socket-proxy` (×2), `Portainer`, `Homepage`.
+  - **Infraestrutura:** `Traefik v3`, `socket-proxy` (×2), `Portainer`, `Homepage`, `nebula-sync` (replica o Pi-hole 1 no 2).
   - **Monitoramento:** `Prometheus`, `Grafana`, `node-exporter`.
 
 ### Como as peças se conectam
@@ -236,6 +236,16 @@ GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=
 
 # ==========================================
+# SINCRONIZAÇÃO DOS PI-HOLES (nebula-sync)
+# O nó 1 é o PRIMÁRIO (edite listas/registros só nele); o nó 2 recebe as cópias.
+# As senhas são as PIHOLE_ADMIN_PASSWORD de cada nó (stack-dns/.env). NÃO use '|' nem ',' nelas.
+# ==========================================
+PIHOLE1_IP=192.168.1.10
+PIHOLE2_IP=192.168.1.11
+PIHOLE1_PASSWORD=
+PIHOLE2_PASSWORD=
+
+# ==========================================
 # SOCKET PROXY (acesso restrito ao Docker)
 # GID do grupo 'docker' do host:  getent group docker | cut -d: -f3
 # (o scripts/setup.sh preenche se estiver vazio)
@@ -359,7 +369,7 @@ services:
       - /var/lib/docker/volumes:/var/lib/docker/volumes
 ```
 
-**Sincronização entre os dois Pi-holes.** As listas, grupos e registros locais precisam ser iguais nos dois nós; o Pi-hole v6 não tem sincronização nativa. Use o *Teleporter* manualmente ou uma ferramenta de replicação compatível com v6 (por exemplo, `nebula-sync`; verifique a compatibilidade com a sua versão).
+**Sincronização entre os dois Pi-holes:** feita pelo `nebula-sync` no Servidor 3 (seção 5.7). **Edite listas, grupos, clientes e registros DNS locais só no `pihole-1`.**
 
 **Acesso remoto.** No painel do Tailscale: (1) aprove as rotas `192.168.1.0/24` dos dois nós; (2) em *DNS*, adicione os IPs Tailscale dos dois Pi-holes como nameservers e ative *Override DNS servers*.
 
@@ -509,6 +519,36 @@ services:
       - "traefik.http.routers.traefik.middlewares=traefik-auth"
       # Middleware reutilizável por outras stacks: traefik-auth@docker
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:?defina TRAEFIK_DASHBOARD_AUTH no .env}"
+
+  # Replica do Pi-hole PRIMÁRIO (pihole-1) para o secundário (pihole-2): listas, grupos, clientes e
+  # registros DNS locais. Edite essas coisas SÓ no primário. Configuração de infraestrutura
+  # (upstreams, DNSSEC, listening mode...) NÃO é sincronizada: ela vem das variáveis do Compose de cada nó.
+  nebula-sync:
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    container_name: nebula-sync
+    restart: unless-stopped
+    mem_limit: 128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: ${TZ}
+      # formato: URL|senha  (não use '|' nem ',' nas senhas do Pi-hole)
+      PRIMARY: "http://${PIHOLE1_IP:?defina PIHOLE1_IP no .env}|${PIHOLE1_PASSWORD:?defina PIHOLE1_PASSWORD no .env}"
+      REPLICAS: "http://${PIHOLE2_IP:?defina PIHOLE2_IP no .env}|${PIHOLE2_PASSWORD:?defina PIHOLE2_PASSWORD no .env}"
+      FULL_SYNC: "false"            # false = sincronização seletiva (abaixo); true importaria o Teleporter inteiro
+      RUN_GRAVITY: "true"           # reconstrói a gravity no réplica após sincronizar
+      CRON: "0 * * * *"             # de hora em hora
+      SYNC_GRAVITY_GROUP: "true"
+      SYNC_GRAVITY_AD_LIST: "true"
+      SYNC_GRAVITY_AD_LIST_BY_GROUP: "true"
+      SYNC_GRAVITY_DOMAIN_LIST: "true"
+      SYNC_GRAVITY_DOMAIN_LIST_BY_GROUP: "true"
+      SYNC_GRAVITY_CLIENT: "true"
+      SYNC_GRAVITY_CLIENT_BY_GROUP: "true"
+      SYNC_CONFIG_DNS: "true"
+      SYNC_CONFIG_DNS_INCLUDE: "hosts,cnameRecords"   # registros DNS locais criados na interface
 
   portainer:
     image: portainer/portainer-ce:2.45.1   # linha LTS (2.45)
@@ -1016,6 +1056,26 @@ radarr:
 
 ---
 
+### 📄 5.7. Sincronização dos dois Pi-holes (`nebula-sync`)
+
+O Pi-hole v6 não replica nada sozinho. O `lovelaze/nebula-sync` (container `nebula-sync` na `stack-management`) copia, **de hora em hora**, do primário (`pihole-1`) para o réplica (`pihole-2`), usando a API dos dois nós, e roda a gravity no réplica.
+
+| Sincroniza (do 1 para o 2) | **Não** sincroniza (vem do Compose de cada nó) |
+|---|---|
+| Grupos, listas de bloqueio, listas de domínios, clientes | Upstreams/Unbound, DNSSEC, `listeningMode`, `revServers` |
+| Registros DNS locais criados na interface (`dns.hosts`, `dns.cnameRecords`) | O wildcard `*.seu-dominio.com` (`FTLCONF_misc_dnsmasq_lines`), senhas, DHCP |
+
+**Por que seletivo e não `FULL_SYNC=true`?** O modo completo importa o Teleporter inteiro no réplica e sobrescreveria configurações que o Compose já define por variável de ambiente (infraestrutura como código). A sincronização seletiva copia só o que você edita pela interface.
+
+- **Direção única:** o que for criado direto no `pihole-2` é sobrescrito na próxima execução. Edite sempre no `pihole-1`.
+- **Credenciais:** `PIHOLE1_PASSWORD` e `PIHOLE2_PASSWORD` no `.env` do Servidor 3 são as `PIHOLE_ADMIN_PASSWORD` de cada nó. **Não use `|` nem `,` nessas senhas** (são separadores do formato `URL|senha`). O tráfego vai em HTTP puro na LAN; se isso o incomoda, ative o HTTPS do Pi-hole (porta 443) e use `https://` com `CLIENT_SKIP_TLS_VERIFICATION=true` (certificado autoassinado).
+- **Dependência:** o sync roda no Servidor 3. Se ele cair, os dois Pi-holes continuam resolvendo normalmente; apenas param de se sincronizar.
+- **Verificar:** `docker logs nebula-sync` mostra cada execução; crie uma lista de teste no `pihole-1` e confirme no `pihole-2` após o próximo ciclo. Para forçar agora: `docker restart nebula-sync`.
+- **Alertas (opcional):** o nebula-sync aceita webhooks de sucesso/falha (`WEBHOOK_SYNC_FAILURE_URL`, etc.), por exemplo para o healthchecks.io.
+- **Senhas em variável de ambiente** ficam visíveis em `docker inspect`. O projeto também aceita `PRIMARY_FILE`/`REPLICAS_FILE` (Docker secrets) se preferir.
+
+---
+
 ## 🚀 6. Inicialização (Ordem Correta)
 
 ### 6.1. Preparar o Servidor 3
@@ -1050,7 +1110,7 @@ getent group video render
 ```bash
 docker network create proxy-net                       # 1) rede compartilhada (uma vez)
 
-cd stack-management && docker compose up -d           # 2) Traefik, Portainer, Homepage
+cd stack-management && docker compose up -d           # 2) socket-proxy, Traefik, Portainer, Homepage, nebula-sync
 cd ../stack-media      && docker compose up -d        # 3) mídia
 cd ../stack-monitoring && docker compose up -d        # 4) monitoramento
 ```
@@ -1104,6 +1164,16 @@ docker exec -it recyclarr recyclarr list custom-formats radarr
 - [ ] Uma importação de teste cria **hardlink** (confira com `ls -li`: mesmo inode em `torrents/` e `media/`).
 - [ ] Jellyfin → Painel → Reprodução: *Rockchip RKMPP*; confirme com `docker exec -it jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -hwaccels` e force uma transcodificação para ver se usa o hardware.
 - [ ] `recyclarr sync --preview` executa sem erros.
+
+**Pi-hole e sincronização**
+
+- [ ] `docker logs nebula-sync` mostra a sincronização concluída sem erro de autenticação.
+- [ ] Uma lista/domínio criado no `pihole-1` aparece no `pihole-2` após o próximo ciclo (ou `docker restart nebula-sync`).
+
+**Acesso ao Docker**
+
+- [ ] `docker logs socket-proxy-traefik` sem `denied`; o Traefik lista os containers (dashboard → *HTTP Routers*).
+- [ ] `docker inspect traefik homepage` não mostra `docker.sock` em *Mounts*.
 
 **Monitoramento**
 - [ ] Prometheus → *Status → Targets* com todos os alvos `UP`; Grafana com a fonte de dados criada.
@@ -1195,8 +1265,9 @@ Itens que **não foram testados em hardware** ou dependem de versão:
 5. **`UN_*_PATHS_0` do Unpackerr** e **`SONARR__AUTH__APIKEY`**: confirme no primeiro start (`docker logs`) que foram aceitos.
 6. **Jellyfin 12.x e Homepage 2.x** são linhas novas (agosto/2026). Confirme na primeira subida que a aceleração RKMPP continua funcionando no Jellyfin 12 e, no Homepage, que o portão de autenticação opcional da v2 não está ativo sem você querer.
 7. **Regras do socket-proxy.** A do Traefik segue o README upstream; a do Homepage foi desenhada por mim para o que ele usa (lista/inspeção/estatísticas) e é coberta por testes de caminhos permitidos/negados, mas não foi exercitada com o Homepage real. Se algum widget de Docker ficar sem dados, veja `docker logs socket-proxy-homepage`.
-8. **Ponto único de falha:** DNS é redundante (dois nós), mas o Traefik e todos os serviços dependem do Servidor 3. Se ele cair, as interfaces ficam indisponíveis mesmo com o DNS funcionando.
-9. **Uso de torrents:** se usar trackers públicos, avalie rotear o qBittorrent por uma VPN (por exemplo, com `gluetun`) e verifique a legalidade do uso na sua jurisdição.
+8. **nebula-sync v0.11.x com a sua versão do Pi-hole:** o projeto declara suporte ao Pi-hole v6.x. As chaves `hosts`/`cnameRecords` e a leitura de `SYNC_CONFIG_DNS_INCLUDE` seguem a documentação dele, mas não foram exercitadas contra os seus nós; valide com a lista de teste do checklist (seção 7).
+9. **Ponto único de falha:** DNS é redundante (dois nós), mas o Traefik e todos os serviços dependem do Servidor 3. Se ele cair, as interfaces ficam indisponíveis mesmo com o DNS funcionando.
+10. **Uso de torrents:** se usar trackers públicos, avalie rotear o qBittorrent por uma VPN (por exemplo, com `gluetun`) e verifique a legalidade do uso na sua jurisdição.
 
 ---
 
@@ -1208,6 +1279,8 @@ Itens que **não foram testados em hardware** ou dependem de versão:
 | Traefik não lista nenhum container; log `client version 1.24 is too old` | Traefik < 3.6.1 com Docker 29+ | Use `traefik:v3.6.1` ou superior (o repositório usa 3.7.x) |
 | Traefik sem containers; log `permission denied`/`403`/`Cannot connect to the Docker daemon` | socket-proxy bloqueando uma rota, ou `DOCKER_GID` errado | `docker logs socket-proxy-traefik`; confira `getent group docker` e o `DOCKER_GID` do `.env` |
 | `socket-proxy-*` reinicia: `permission denied` em `/var/run/docker.sock` | `DOCKER_GID` não é o do grupo `docker` do host | Corrija o `DOCKER_GID` e `docker compose up -d` |
+| `nebula-sync`: `authentication`/`401`/`forbidden` | Senha errada no `.env` do Servidor 3, ou senha com `|` ou `,` | Confira `PIHOLE1/2_PASSWORD` = `PIHOLE_ADMIN_PASSWORD` de cada nó |
+| Item criado no `pihole-2` sumiu | Sincronização é do 1 para o 2 e sobrescreve | Crie sempre no `pihole-1` |
 | `manifest unknown` / `not found` ao dar `pull` | Tag fixa que não existe (digitada à mão ou removida do registry) | Rode `make images` (ou o job `Images` do CI) e corrija a tag |
 | Certificado não é emitido; erro de propagação do TXT | O resolver da LAN responde o domínio localmente | Confirme `dnschallenge.resolvers=1.1.1.1:53,...` e o token (Zone:Read + DNS:Edit) |
 | `404 page not found` no Traefik | Falta label, `Host()` errado ou serviço fora da `proxy-net` | `docker logs traefik`; confira labels e redes |
@@ -1235,7 +1308,7 @@ O repositório traz testes e validações que rodam **sem Docker daemon, sem seg
 | **Nenhum `.env` versionado** | `validate.yml` › lint | Segredo commitado por engano |
 | **`docker compose config`** em cada stack (todos os profiles) | `validate.yml` › compose | Sintaxe, âncoras/merge keys, interpolação, `variable is not set` |
 | **Guardas `${VAR:?}`** | `scripts/validate_compose.sh` | Remove uma variável obrigatória e exige que o Compose **falhe** |
-| **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, **todas as imagens com versão fixa**, **socket-proxy** (allowlist: caminhos permitidos/negados, só o cliente conecta, redes internas, `docker.sock` só nos proxies/Portainer) (sem `latest`/`lts`/`stable`), Watchtower ausente, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr v8, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
+| **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, **todas as imagens com versão fixa**, **nebula-sync** (sincronização seletiva, sem config de infraestrutura), **socket-proxy** (allowlist: caminhos permitidos/negados, só o cliente conecta, redes internas, `docker.sock` só nos proxies/Portainer) (sem `latest`/`lts`/`stable`), Watchtower ausente, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr v8, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
 | **README em sincronia** | `validate.yml` › docs | Blocos de código do README diferentes dos arquivos |
 | **gitleaks** | `validate.yml` › secrets | Segredos no histórico do git |
 | **Imagens e arquiteturas** | `images.yml` (semanal) | Imagem removida/renomeada ou sem build `arm64`/`arm/v7` |

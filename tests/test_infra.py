@@ -424,3 +424,48 @@ def test_docker_gid_is_required_and_listed():
     assert "DOCKER_GID" in parse_env(ROOT / ".env.example")
     text = (ROOT / "stack-management/docker-compose.yml").read_text(encoding="utf-8")
     assert "${DOCKER_GID:?" in text
+
+
+# ----------------------------------------------------------------- nebula-sync (réplica dos Pi-holes)
+def _nebula() -> dict:
+    return compose("stack-management")["services"]["nebula-sync"]
+
+
+def test_nebula_sync_is_selective_not_full_sync():
+    """FULL_SYNC=true importaria o Teleporter inteiro e sobrescreveria a config que vem do Compose de cada nó."""
+    env = _nebula()["environment"]
+    assert str(env["FULL_SYNC"]).lower() == "false"
+    for key in ("SYNC_GRAVITY_GROUP", "SYNC_GRAVITY_AD_LIST", "SYNC_GRAVITY_DOMAIN_LIST", "SYNC_GRAVITY_CLIENT"):
+        assert str(env[key]).lower() == "true", key
+
+
+def test_nebula_sync_never_syncs_config_owned_by_the_compose_files():
+    env = _nebula()["environment"]
+    owned_by_compose = {"upstreams", "dnssec", "revServers", "listeningMode", "interface", "dnsmasq_lines"}
+    included = set(env["SYNC_CONFIG_DNS_INCLUDE"].split(","))
+    assert included == {"hosts", "cnameRecords"}, "só os registros DNS locais criados na interface"
+    assert not (included & owned_by_compose)
+    unwanted = {k for k in env if k.startswith("SYNC_CONFIG_") and k not in {"SYNC_CONFIG_DNS", "SYNC_CONFIG_DNS_INCLUDE"}}
+    assert not unwanted, f"não sincronize outras seções de config: {unwanted}"
+    assert "SYNC_GRAVITY_DHCP_LEASES" not in env, "o DHCP não é do Pi-hole neste homelab"
+
+
+def test_nebula_sync_points_primary_at_node_1_and_replica_at_node_2():
+    env = _nebula()["environment"]
+    assert env["PRIMARY"].startswith("http://${PIHOLE1_IP") and "|${PIHOLE1_PASSWORD" in env["PRIMARY"]
+    assert env["REPLICAS"].startswith("http://${PIHOLE2_IP") and "|${PIHOLE2_PASSWORD" in env["REPLICAS"]
+    assert len(env["CRON"].split()) == 5, "CRON em 5 campos"
+
+
+def test_nebula_sync_is_isolated_and_pinned():
+    svc = _nebula()
+    assert re.fullmatch(r"ghcr\.io/lovelaze/nebula-sync:v\d+\.\d+\.\d+", svc["image"])
+    assert "networks" not in svc, "rede padrão: não precisa da proxy-net nem do socket"
+    assert "ports" not in svc and not svc.get("volumes")
+    assert svc["cap_drop"] == ["ALL"]
+
+
+def test_pihole_node_ips_in_env_examples_agree():
+    s3, dns = parse_env(ROOT / ".env.example"), parse_env(ROOT / "stack-dns/.env.example")
+    assert s3["PIHOLE1_IP"] == dns["NODE_IP"], "o exemplo do nó 1 deve bater com o PIHOLE1_IP do Servidor 3"
+    assert s3["PIHOLE1_IP"] != s3["PIHOLE2_IP"]
