@@ -327,7 +327,7 @@ services:
       - ${CONFIG_DIR}/pihole:/etc/pihole
 
   tailscale:
-    image: tailscale/tailscale:v1.104.0
+    image: tailscale/tailscale:v1.104.1
     container_name: tailscale
     restart: unless-stopped
     network_mode: host
