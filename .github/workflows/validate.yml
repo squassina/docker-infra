@@ -18,7 +18,7 @@ jobs:
     name: Lint (yamllint, shellcheck, .env)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
@@ -47,7 +47,7 @@ jobs:
       matrix:
         stack: [stack-management, stack-media, stack-monitoring, stack-dns]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: docker compose config + guardas de variáveis obrigatórias
         run: scripts/validate_compose.sh ${{ matrix.stack }}
@@ -56,7 +56,7 @@ jobs:
     name: Testes de convenções (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
@@ -72,7 +72,7 @@ jobs:
     name: README em sincronia com os arquivos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
@@ -84,7 +84,7 @@ jobs:
     name: Varredura de segredos (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
