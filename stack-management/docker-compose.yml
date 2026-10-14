@@ -1,16 +1,90 @@
 networks:
   proxy-net:
     external: true      # criada manualmente: docker network create proxy-net
+  # Redes INTERNAS (sem saída): cada cliente fala só com o seu socket-proxy
+  socket-traefik:
+    internal: true
+  socket-homepage:
+    internal: true
 
 services:
+  # ---------- Acesso restrito ao Docker (no lugar de montar o docker.sock no Traefik/Homepage) ----------
+  # Allowlist por método HTTP, só o container cliente consegue conectar (-allowfrom),
+  # sem rede externa, sem capabilities, sistema de arquivos somente leitura.
+  socket-proxy-traefik:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: socket-proxy-traefik
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker)}"
+    mem_limit: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "-loglevel=info"
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=traefik"
+      - '-allowGET=/v1\..{1,2}/(version|containers/.*|events.*)'
+      - "-allowHEAD=/_ping"          # obrigatório com Traefik >= 3.6.1
+      - "-allowhealthcheck"
+      - "-watchdoginterval=3600"
+      - "-stoponwatchdog"
+      - "-shutdowngracetime=5"
+    healthcheck:
+      test: ["CMD", "./healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-traefik
+
+  socket-proxy-homepage:
+    image: wollomatic/socket-proxy:1.13.1
+    container_name: socket-proxy-homepage
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker)}"
+    mem_limit: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "-loglevel=info"
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=homepage"
+      # só leitura: lista de containers, inspeção e estatísticas
+      - '-allowGET=(/v1\..{1,2})?/containers/(json|[^/]+/(json|stats))'
+      - "-allowhealthcheck"
+      - "-watchdoginterval=3600"
+      - "-stoponwatchdog"
+      - "-shutdowngracetime=5"
+    healthcheck:
+      test: ["CMD", "./healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-homepage
+
   traefik:
-    image: traefik:v3.7      # >= 3.6.1 é necessário com Docker Engine 29+
+    image: traefik:v3.7.12   # >= 3.6.1 é necessário com Docker Engine 29+
     container_name: traefik
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     networks:
       - proxy-net
+      - socket-traefik
+    depends_on:
+      socket-proxy-traefik:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -24,6 +98,7 @@ services:
       - "--log.level=INFO"
       # Docker provider
       - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://socket-proxy-traefik:2375"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=proxy-net"
       # Entrypoints + redirecionamento HTTP -> HTTPS
@@ -53,7 +128,6 @@ services:
       timeout: 5s
       retries: 3
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONFIG_DIR}/traefik/letsencrypt:/letsencrypt
     labels:
       - "traefik.enable=true"
@@ -64,20 +138,38 @@ services:
       # Middleware reutilizável por outras stacks: traefik-auth@docker
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:?defina TRAEFIK_DASHBOARD_AUTH no .env}"
 
-  watchtower:
-    image: nickfedor/watchtower:latest   # fork mantido; fixe uma versão após validar
-    container_name: watchtower
+  # Replica do Pi-hole PRIMÁRIO (pihole-1) para o secundário (pihole-2): listas, grupos, clientes e
+  # registros DNS locais. Edite essas coisas SÓ no primário. Configuração de infraestrutura
+  # (upstreams, DNSSEC, listening mode...) NÃO é sincronizada: ela vem das variáveis do Compose de cada nó.
+  nebula-sync:
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    container_name: nebula-sync
     restart: unless-stopped
+    mem_limit: 128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       TZ: ${TZ}
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_LABEL_ENABLE: "true"        # só atualiza containers com a label enable=true
-      WATCHTOWER_SCHEDULE: "0 0 4 * * *"     # todo dia às 04:00
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # formato: URL|senha  (não use '|' nem ',' nas senhas do Pi-hole)
+      PRIMARY: "http://${PIHOLE1_IP:?defina PIHOLE1_IP no .env}|${PIHOLE1_PASSWORD:?defina PIHOLE1_PASSWORD no .env}"
+      REPLICAS: "http://${PIHOLE2_IP:?defina PIHOLE2_IP no .env}|${PIHOLE2_PASSWORD:?defina PIHOLE2_PASSWORD no .env}"
+      FULL_SYNC: "false"            # false = sincronização seletiva (abaixo); true importaria o Teleporter inteiro
+      RUN_GRAVITY: "true"           # reconstrói a gravity no réplica após sincronizar
+      CRON: "0 * * * *"             # de hora em hora
+      SYNC_GRAVITY_GROUP: "true"
+      SYNC_GRAVITY_AD_LIST: "true"
+      SYNC_GRAVITY_AD_LIST_BY_GROUP: "true"
+      SYNC_GRAVITY_DOMAIN_LIST: "true"
+      SYNC_GRAVITY_DOMAIN_LIST_BY_GROUP: "true"
+      SYNC_GRAVITY_CLIENT: "true"
+      SYNC_GRAVITY_CLIENT_BY_GROUP: "true"
+      SYNC_CONFIG_DNS: "true"
+      SYNC_CONFIG_DNS_INCLUDE: "hosts,cnameRecords"   # registros DNS locais criados na interface
 
   portainer:
-    image: portainer/portainer-ce:lts
+    image: portainer/portainer-ce:2.45.1   # linha LTS (2.45)
     container_name: portainer
     restart: unless-stopped
     security_opt:
@@ -97,20 +189,24 @@ services:
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
   homepage:
-    image: ghcr.io/gethomepage/homepage:latest
+    image: ghcr.io/gethomepage/homepage:v2.4.0
     container_name: homepage
     restart: unless-stopped
     networks:
       - proxy-net
+      - socket-homepage
+    depends_on:
+      socket-proxy-homepage:
+        condition: service_healthy
     environment:
       PUID: ${PUID}
       PGID: ${PGID}
       HOMEPAGE_ALLOWED_HOSTS: home.${MY_DOMAIN}   # sem isso, o Homepage recusa o acesso por hostname
     volumes:
-      - ${CONFIG_DIR}/homepage:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONFIG_DIR}/homepage:/app/config      # docker.yaml aponta para socket-proxy-homepage:2375 (ver README)
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy-net"
       - "traefik.http.routers.homepage.rule=Host(`home.${MY_DOMAIN}`)"
       - "traefik.http.routers.homepage.entrypoints=websecure"
       - "traefik.http.services.homepage.loadbalancer.server.port=3000"

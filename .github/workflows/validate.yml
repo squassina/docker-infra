@@ -16,7 +16,8 @@ concurrency:
 jobs:
   lint:
     name: Lint (yamllint, shellcheck, .env)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -24,13 +25,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Instalar linters (versões fixas)
+        run: pip install --quiet -r tests/requirements-lint.txt
+
       - name: yamllint
-        run: |
-          pip install --quiet yamllint
-          yamllint -s .
+        run: yamllint -s .
 
       - name: shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck --version && shellcheck scripts/*.sh
 
       - name: Nenhum .env real versionado
         run: |
@@ -41,7 +43,8 @@ jobs:
 
   compose:
     name: Compose config (${{ matrix.stack }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +57,8 @@ jobs:
 
   tests:
     name: Testes de convenções (pytest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -70,7 +74,8 @@ jobs:
 
   docs:
     name: README em sincronia com os arquivos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -82,7 +87,11 @@ jobs:
 
   secrets:
     name: Varredura de segredos (gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read      # o gitleaks lista os commits do PR pela API
     steps:
       - uses: actions/checkout@v7
         with:
@@ -92,12 +101,14 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   ci-ok:
     name: CI ok
     if: always()
     needs: [lint, compose, tests, docs, secrets]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Todos os jobs passaram?
         run: |

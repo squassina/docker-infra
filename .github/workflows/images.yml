@@ -1,8 +1,10 @@
 name: Images
 
 # Confere se as imagens existem no registry e têm build para a arquitetura da placa
-# (arm64 no Orange Pi 5 Plus, arm/v7 no NanoPi NEO). Roda toda segunda-feira porque
-# imagens podem ser removidas, renomeadas ou perder suporte a ARM sem aviso.
+# (arm64 no Orange Pi 5 Plus, arm/v7 no NanoPi NEO). Roda toda segunda-feira (09:00 UTC = 06:00 em
+# Brasília) porque imagens podem ser removidas, renomeadas ou perder suporte a ARM sem aviso.
+# Obs.: o agendamento só vale na branch padrão e o GitHub o pausa após 60 dias sem atividade
+# no repositório (os PRs do Dependabot e os commits contam como atividade).
 on:
   schedule:
     - cron: "0 9 * * 1"
@@ -16,10 +18,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Imagens e arquiteturas
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Opcional: segredos do Docker Hub evitam o limite de requisições anônimas dos runners compartilhados.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
 
@@ -27,6 +38,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Login no Docker Hub (opcional)
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        run: echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
       - run: pip install --quiet pyyaml
 
+      # Erro definitivo (tag inexistente / sem build ARM) reprova o job.
+      # Limite de requisições ou falha de rede viram AVISO depois de 3 tentativas.
       - run: python scripts/check_images.py

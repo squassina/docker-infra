@@ -4,9 +4,6 @@ x-env: &env
   PGID: ${PGID}
   TZ: ${TZ}
 
-x-wt: &wt                                  # opt-in do Watchtower
-  com.centurylinklabs.watchtower.enable: "true"
-
 x-arr: &arr
   restart: unless-stopped
   networks:
@@ -22,7 +19,7 @@ networks:
 services:
   qbittorrent:
     <<: *arr
-    image: lscr.io/linuxserver/qbittorrent:latest
+    image: lscr.io/linuxserver/qbittorrent:5.1.4-r3-ls453
     container_name: qbittorrent
     ports:
       - "6881:6881"          # porta de peers (a WebUI sai só pelo Traefik)
@@ -34,7 +31,6 @@ services:
       - ${CONFIG_DIR:?defina CONFIG_DIR no .env}/qbittorrent:/config
       - ${DATA_DIR:?defina DATA_DIR no .env}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.qbittorrent.rule: "Host(`qbit.${MY_DOMAIN}`)"
@@ -42,7 +38,7 @@ services:
       traefik.http.services.qbittorrent.loadbalancer.server.port: "8080"
 
   flaresolverr:
-    image: flaresolverr/flaresolverr:latest
+    image: flaresolverr/flaresolverr:v3.5.2
     container_name: flaresolverr
     restart: unless-stopped
     mem_limit: 1g            # o Chromium interno pode vazar memória
@@ -51,19 +47,16 @@ services:
     environment:
       LOG_LEVEL: info
       TZ: ${TZ}
-    labels:
-      <<: *wt
 
   prowlarr:
     <<: *arr
-    image: lscr.io/linuxserver/prowlarr:latest
+    image: lscr.io/linuxserver/prowlarr:2.6.5.5623-ls163
     container_name: prowlarr
     environment:
       <<: *env
     volumes:
       - ${CONFIG_DIR}/prowlarr:/config
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.prowlarr.rule: "Host(`prowlarr.${MY_DOMAIN}`)"
@@ -72,7 +65,7 @@ services:
 
   sonarr:
     <<: *arr
-    image: lscr.io/linuxserver/sonarr:latest
+    image: lscr.io/linuxserver/sonarr:4.0.20.3014-ls328
     container_name: sonarr
     environment:
       <<: *env
@@ -81,7 +74,6 @@ services:
       - ${CONFIG_DIR}/sonarr:/config
       - ${DATA_DIR}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.sonarr.rule: "Host(`sonarr.${MY_DOMAIN}`)"
@@ -90,7 +82,7 @@ services:
 
   radarr:
     <<: *arr
-    image: lscr.io/linuxserver/radarr:latest
+    image: lscr.io/linuxserver/radarr:6.4.4.10685-ls320
     container_name: radarr
     environment:
       <<: *env
@@ -99,7 +91,6 @@ services:
       - ${CONFIG_DIR}/radarr:/config
       - ${DATA_DIR}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.radarr.rule: "Host(`radarr.${MY_DOMAIN}`)"
@@ -108,7 +99,7 @@ services:
 
   lidarr:
     <<: *arr
-    image: lscr.io/linuxserver/lidarr:latest
+    image: lscr.io/linuxserver/lidarr:3.1.0.4875-ls43
     container_name: lidarr
     environment:
       <<: *env
@@ -116,7 +107,6 @@ services:
       - ${CONFIG_DIR}/lidarr:/config
       - ${DATA_DIR}:/data
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.lidarr.rule: "Host(`lidarr.${MY_DOMAIN}`)"
@@ -125,7 +115,7 @@ services:
 
   bazarr:
     <<: *arr
-    image: lscr.io/linuxserver/bazarr:latest
+    image: lscr.io/linuxserver/bazarr:v1.6.2-ls367
     container_name: bazarr
     environment:
       <<: *env
@@ -133,7 +123,6 @@ services:
       - ${CONFIG_DIR}/bazarr:/config
       - ${DATA_DIR}/media:/data/media     # mesmos caminhos que Sonarr/Radarr enxergam
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.bazarr.rule: "Host(`bazarr.${MY_DOMAIN}`)"
@@ -141,7 +130,7 @@ services:
       traefik.http.services.bazarr.loadbalancer.server.port: "6767"
 
   unpackerr:
-    image: golift/unpackerr:latest
+    image: ghcr.io/unpackerr/unpackerr:0.16.1
     container_name: unpackerr
     restart: unless-stopped
     user: "${PUID}:${PGID}"          # arquivos extraídos com o dono correto
@@ -159,11 +148,9 @@ services:
       UN_RADARR_0_PATHS_0: /data/torrents/movies
     volumes:
       - ${DATA_DIR}/torrents:/data/torrents
-    labels:
-      <<: *wt
 
   recyclarr:
-    image: ghcr.io/recyclarr/recyclarr:latest
+    image: ghcr.io/recyclarr/recyclarr:8.7.3
     container_name: recyclarr
     restart: unless-stopped
     user: "${PUID}:${PGID}"
@@ -176,11 +163,9 @@ services:
     volumes:
       - ${CONFIG_DIR}/recyclarr:/config                          # estado/cache
       - ../recyclarr/recyclarr.yml:/config/recyclarr.yml:ro      # config versionada no repo
-    labels:
-      <<: *wt
 
   jellyfin:
-    image: jellyfin/jellyfin:latest   # imagem oficial: traz os drivers Rockchip MPP/RGA/OpenCL
+    image: jellyfin/jellyfin:12.2   # imagem oficial: traz os drivers Rockchip MPP/RGA/OpenCL
     container_name: jellyfin
     restart: unless-stopped
     user: "${PUID}:${PGID}"
@@ -205,7 +190,6 @@ services:
       - /dev/rga:/dev/rga
       - /dev/mali0:/dev/mali0
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.jellyfin.rule: "Host(`jellyfin.${MY_DOMAIN}`)"
@@ -213,7 +197,7 @@ services:
       traefik.http.services.jellyfin.loadbalancer.server.port: "8096"
 
   seerr:
-    image: ghcr.io/seerr-team/seerr:latest
+    image: ghcr.io/seerr-team/seerr:v3.5.0
     container_name: seerr
     init: true
     restart: unless-stopped
@@ -225,7 +209,6 @@ services:
     volumes:
       - ${CONFIG_DIR}/seerr:/app/config    # o container sempre roda como UID 1000: chown 1000:1000
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.seerr.rule: "Host(`seerr.${MY_DOMAIN}`)"
@@ -234,7 +217,7 @@ services:
 
   navidrome:
     <<: *arr
-    image: deluan/navidrome:latest
+    image: deluan/navidrome:0.64.2
     container_name: navidrome
     user: "${PUID}:${PGID}"
     environment:
@@ -245,7 +228,6 @@ services:
       - ${CONFIG_DIR}/navidrome:/data
       - ${DATA_DIR}/media/music:/music:ro
     labels:
-      <<: *wt
       traefik.enable: "true"
       traefik.docker.network: proxy-net
       traefik.http.routers.navidrome.rule: "Host(`music.${MY_DOMAIN}`)"

@@ -148,7 +148,8 @@ def test_traefik_services_are_on_proxy_net_and_pin_the_network():
     for stack, name, svc, lab in traefik_services():
         nets = networks_of(svc)
         assert "proxy-net" in nets, f"{stack}/{name}: tem labels do Traefik mas não está na proxy-net"
-        if len(nets) > 1:
+        has_backend = any(k.endswith("loadbalancer.server.port") for k in lab)   # api@internal não tem backend
+        if len(nets) > 1 and has_backend:
             assert lab.get("traefik.docker.network") == "proxy-net", (
                 f"{stack}/{name}: está em várias redes; defina traefik.docker.network=proxy-net"
             )
@@ -189,20 +190,42 @@ def test_prometheus_scrapes_the_traefik_metrics_port():
     assert "traefik:8082" in targets
 
 
-# ----------------------------------------------------------------- watchtower
-def test_watchtower_is_opt_in_and_uses_the_maintained_fork():
-    wt = compose("stack-management")["services"]["watchtower"]
-    assert "containrrr" not in wt["image"], "containrrr/watchtower está arquivado e quebra com Docker 29+"
-    assert str(wt["environment"]["WATCHTOWER_LABEL_ENABLE"]).lower() == "true"
+# ----------------------------------------------------------------- versões fixas
+FLOATING_TAGS = {"latest", "lts", "stable", "main", "master", "develop", "dev", "nightly", "edge", "testing", "preview"}
 
 
-def test_critical_services_are_not_auto_updated():
+def all_images():
     for stack in ALL_STACKS:
         for name, svc in compose(stack)["services"].items():
-            if name in CRITICAL:
-                assert labels_of(svc).get("com.centurylinklabs.watchtower.enable") != "true", (
-                    f"{stack}/{name}: serviço crítico não deve ter atualização automática"
-                )
+            yield stack, name, svc["image"]
+
+
+def test_every_image_is_pinned_to_an_explicit_version():
+    """Sem :latest/:lts/:stable. O Dependabot propõe as atualizações como PR."""
+    for stack, name, image in all_images():
+        repo, _, tag = image.rpartition(":")
+        assert repo and "/" not in tag, f"{stack}/{name}: imagem sem tag ({image})"
+        assert tag not in FLOATING_TAGS, f"{stack}/{name}: tag flutuante ({image})"
+        assert re.search(r"\d", tag), f"{stack}/{name}: a tag deveria conter uma versão ({image})"
+
+
+def test_watchtower_was_removed():
+    """Com tags fixas o Watchtower não faz nada (ele só re-baixa a mesma tag) e exigia docker.sock em escrita."""
+    text = " ".join((ROOT / s / "docker-compose.yml").read_text(encoding="utf-8").lower() for s in ALL_STACKS)
+    assert "watchtower" not in text
+
+
+def test_recyclarr_is_pinned_to_a_v8_release():
+    """O Recyclarr não publica mais a tag 'latest' (desde 8.4.0) e o trash_id em perfis só existe na v8+."""
+    image = compose("stack-media")["services"]["recyclarr"]["image"]
+    m = re.fullmatch(r"ghcr\.io/recyclarr/recyclarr:(\d+)\.\d+\.\d+", image)
+    assert m and int(m.group(1)) >= 8, image
+
+
+def test_images_use_the_registries_that_actually_publish_them():
+    images = {name: image for _, name, image in all_images() if name in {"unpackerr", "seerr", "flaresolverr"}}
+    assert images["unpackerr"].startswith("ghcr.io/unpackerr/unpackerr:"), "o Docker Hub do Unpackerr é opcional"
+    assert images["seerr"].startswith("ghcr.io/seerr-team/seerr:")
 
 
 # ----------------------------------------------------------------- mídia
@@ -316,3 +339,133 @@ def test_env_examples_contain_only_placeholders(example):
 def test_gitignore_blocks_env_files():
     lines = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
     assert ".env" in lines and "**/.env" in lines
+
+
+# ----------------------------------------------------------------- socket proxy
+SOCKET_USERS = {"traefik": "socket-proxy-traefik", "homepage": "socket-proxy-homepage"}
+
+
+def _proxy_flags(name: str) -> dict:
+    """{'allowGET': [regex...], 'allowfrom': 'traefik', ...} a partir do command do socket-proxy."""
+    flags: dict = {}
+    for item in compose("stack-management")["services"][name]["command"]:
+        key, _, val = item.lstrip("-").partition("=")
+        flags.setdefault(key, []).append(val)
+    return flags
+
+
+def _allowed(name: str, method: str, path: str) -> bool:
+    """O socket-proxy coloca ^...$ em volta do padrão (regex do Go, compatível com re.fullmatch aqui)."""
+    patterns = _proxy_flags(name).get(f"allow{method}", [])
+    return any(re.fullmatch(p, path) for p in patterns)
+
+
+def test_docker_socket_is_mounted_only_by_the_proxies_and_portainer():
+    holders = set()
+    for stack in ALL_STACKS:
+        for name, svc in compose(stack)["services"].items():
+            if any("docker.sock" in str(v) for v in svc.get("volumes", [])):
+                holders.add(name)
+    # portainer-agent precisa do socket completo (gerencia os nós); portainer idem
+    assert holders == {"socket-proxy-traefik", "socket-proxy-homepage", "portainer", "portainer-agent"}, holders
+
+
+def test_traefik_reads_docker_through_its_socket_proxy():
+    svc = compose("stack-management")["services"]["traefik"]
+    cmd = " ".join(svc["command"])
+    assert "--providers.docker.endpoint=tcp://socket-proxy-traefik:2375" in cmd
+    assert not any("docker.sock" in str(v) for v in svc["volumes"])
+    assert svc["depends_on"]["socket-proxy-traefik"]["condition"] == "service_healthy"
+
+
+@pytest.mark.parametrize("client,proxy", SOCKET_USERS.items())
+def test_socket_proxy_is_locked_down(client, proxy):
+    cfg = compose("stack-management")
+    svc, flags = cfg["services"][proxy], _proxy_flags(proxy)
+    assert flags["allowfrom"] == [client], "só o cliente pode conectar"
+    assert cfg["services"][client].get("container_name", client) == client, "allowfrom resolve pelo nome do container"
+    assert not (set(flags) & {"allowPOST", "allowPUT", "allowDELETE", "allowPATCH", "allowCONNECT"}), "somente leitura"
+    assert svc["read_only"] is True and svc["cap_drop"] == ["ALL"]
+    assert "ports" not in svc and "expose" not in svc
+    assert svc["user"].startswith("65534:") and "DOCKER_GID" in svc["user"]
+    assert svc["image"].startswith("wollomatic/socket-proxy:1.")
+    # rede própria e INTERNA; fora da proxy-net (que tem as UIs publicadas)
+    net = next(iter(svc["networks"]))
+    assert svc["networks"] == [net] and cfg["networks"][net]["internal"] is True
+    assert "proxy-net" not in svc["networks"]
+    assert net in cfg["services"][client]["networks"]
+
+
+def test_traefik_socket_proxy_requires_the_head_ping_rule():
+    """Traefik >= 3.6.1 faz HEAD /_ping; sem a regra ele cai numa versão de API errada e o provider quebra."""
+    assert "/_ping" in _proxy_flags("socket-proxy-traefik")["allowHEAD"]
+
+
+def test_traefik_proxy_allowlist_matches_what_traefik_needs_and_nothing_else():
+    p = "socket-proxy-traefik"
+    for ok in ("/v1.51/version", "/v1.51/containers/json", "/v1.51/containers/0123abcd/json", "/v1.51/events"):
+        assert _allowed(p, "GET", ok), ok
+    for bad in ("/v1.51/images/json", "/v1.51/info", "/v1.51/volumes", "/v1.51/networks", "/v1.51/secrets", "/version"):
+        assert not _allowed(p, "GET", bad), bad
+    assert not _allowed(p, "POST", "/v1.51/containers/create")
+
+
+def test_homepage_proxy_allows_only_container_list_inspect_and_stats():
+    p = "socket-proxy-homepage"
+    for ok in ("/containers/json", "/v1.51/containers/json", "/containers/sonarr/json", "/containers/sonarr/stats"):
+        assert _allowed(p, "GET", ok), ok
+    for bad in ("/containers/sonarr/archive", "/containers/sonarr/logs", "/containers/sonarr/exec",
+                "/images/json", "/info", "/volumes", "/containers/a/b/json"):
+        assert not _allowed(p, "GET", bad), bad
+    assert not _allowed(p, "POST", "/containers/sonarr/exec")
+
+
+def test_docker_gid_is_required_and_listed():
+    assert "DOCKER_GID" in parse_env(ROOT / ".env.example")
+    text = (ROOT / "stack-management/docker-compose.yml").read_text(encoding="utf-8")
+    assert "${DOCKER_GID:?" in text
+
+
+# ----------------------------------------------------------------- nebula-sync (réplica dos Pi-holes)
+def _nebula() -> dict:
+    return compose("stack-management")["services"]["nebula-sync"]
+
+
+def test_nebula_sync_is_selective_not_full_sync():
+    """FULL_SYNC=true importaria o Teleporter inteiro e sobrescreveria a config que vem do Compose de cada nó."""
+    env = _nebula()["environment"]
+    assert str(env["FULL_SYNC"]).lower() == "false"
+    for key in ("SYNC_GRAVITY_GROUP", "SYNC_GRAVITY_AD_LIST", "SYNC_GRAVITY_DOMAIN_LIST", "SYNC_GRAVITY_CLIENT"):
+        assert str(env[key]).lower() == "true", key
+
+
+def test_nebula_sync_never_syncs_config_owned_by_the_compose_files():
+    env = _nebula()["environment"]
+    owned_by_compose = {"upstreams", "dnssec", "revServers", "listeningMode", "interface", "dnsmasq_lines"}
+    included = set(env["SYNC_CONFIG_DNS_INCLUDE"].split(","))
+    assert included == {"hosts", "cnameRecords"}, "só os registros DNS locais criados na interface"
+    assert not (included & owned_by_compose)
+    unwanted = {k for k in env if k.startswith("SYNC_CONFIG_") and k not in {"SYNC_CONFIG_DNS", "SYNC_CONFIG_DNS_INCLUDE"}}
+    assert not unwanted, f"não sincronize outras seções de config: {unwanted}"
+    assert "SYNC_GRAVITY_DHCP_LEASES" not in env, "o DHCP não é do Pi-hole neste homelab"
+
+
+def test_nebula_sync_points_primary_at_node_1_and_replica_at_node_2():
+    env = _nebula()["environment"]
+    assert env["PRIMARY"].startswith("http://${PIHOLE1_IP") and "|${PIHOLE1_PASSWORD" in env["PRIMARY"]
+    assert env["REPLICAS"].startswith("http://${PIHOLE2_IP") and "|${PIHOLE2_PASSWORD" in env["REPLICAS"]
+    assert len(env["CRON"].split()) == 5, "CRON em 5 campos"
+
+
+def test_nebula_sync_is_isolated_and_pinned():
+    svc = _nebula()
+    assert re.fullmatch(r"ghcr\.io/lovelaze/nebula-sync:v\d+\.\d+\.\d+", svc["image"])
+    assert "networks" not in svc, "rede padrão: não precisa da proxy-net nem do socket"
+    assert "ports" not in svc and not svc.get("volumes")
+    assert svc["cap_drop"] == ["ALL"]
+
+
+def test_pihole_node_ips_in_env_examples_agree():
+    s3, dns = parse_env(ROOT / ".env.example"), parse_env(ROOT / "stack-dns/.env.example")
+    assert s3["PIHOLE1_IP"] == dns["NODE_IP"], "o exemplo do nó 1 deve bater com o PIHOLE1_IP do Servidor 3"
+    assert s3["PIHOLE1_IP"] != s3["PIHOLE2_IP"]

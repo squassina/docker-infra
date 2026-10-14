@@ -15,7 +15,22 @@ get() {
 
 CONFIG_DIR="$(get CONFIG_DIR)"; DATA_DIR="$(get DATA_DIR)"
 PUID="$(get PUID)"; PGID="$(get PGID)"
-[ -n "$CONFIG_DIR" ] && [ -n "$DATA_DIR" ] || { echo "CONFIG_DIR e DATA_DIR precisam estar definidos no .env"; exit 1; }
+if [ -z "$CONFIG_DIR" ] || [ -z "$DATA_DIR" ]; then
+  echo "CONFIG_DIR e DATA_DIR precisam estar definidos no .env"; exit 1
+fi
+
+# GID do grupo 'docker': o socket-proxy roda como 65534:<GID> para conseguir ler /var/run/docker.sock
+detected_gid="$(getent group docker | cut -d: -f3 || true)"
+current_gid="$(get DOCKER_GID)"
+if [ -z "$detected_gid" ]; then
+  echo "AVISO: grupo 'docker' não encontrado; defina DOCKER_GID no .env manualmente."
+elif [ -z "$current_gid" ]; then
+  if grep -q '^DOCKER_GID=' .env; then sed -i -E "s/^DOCKER_GID=.*/DOCKER_GID=${detected_gid}/" .env
+  else echo "DOCKER_GID=${detected_gid}" >> .env; fi
+  echo "DOCKER_GID=${detected_gid} gravado no .env"
+elif [ "$current_gid" != "$detected_gid" ]; then
+  echo "AVISO: DOCKER_GID=$current_gid no .env, mas o grupo docker deste host é $detected_gid."
+fi
 
 for s in stack-management stack-media stack-monitoring; do
   ln -sfn ../.env "$s/.env"
