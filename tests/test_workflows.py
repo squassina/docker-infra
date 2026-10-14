@@ -84,3 +84,30 @@ def test_checkout_depth_for_gitleaks_scans_full_history():
     job = load(ROOT / ".github/workflows/validate.yml")["jobs"]["secrets"]
     checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert checkout["with"]["fetch-depth"] == 0
+
+
+def test_runners_are_pinned_not_latest():
+    """ubuntu-latest migra para o Ubuntu 26 em 19/10/2026: mude de versão de propósito, não por surpresa."""
+    for path in WORKFLOWS:
+        for name, job in load(path)["jobs"].items():
+            assert job["runs-on"] != "ubuntu-latest", f"{path.name}/{name}: fixe a versão do runner (ex.: ubuntu-24.04)"
+
+
+def test_lint_requirements_are_pinned_and_used_by_the_lint_job():
+    lines = [l.strip() for l in (ROOT / "tests/requirements-lint.txt").read_text(encoding="utf-8").splitlines()
+             if l.strip() and not l.startswith("#")]
+    assert any(l.startswith("shellcheck-py==") for l in lines) and any(l.startswith("yamllint==") for l in lines)
+    assert all("==" in l for l in lines), "linters devem ter versão exata (o shellcheck do runner diferia do local)"
+    runs = " ".join(s.get("run", "") for s in load(ROOT / ".github/workflows/validate.yml")["jobs"]["lint"]["steps"])
+    assert "tests/requirements-lint.txt" in runs and "shellcheck" in runs
+
+
+def test_no_python_bytecode_is_tracked_and_gitignore_covers_it():
+    import shutil
+    import subprocess
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+    assert "__pycache__/" in ignore and "*.pyc" in ignore
+    if shutil.which("git") and (ROOT / ".git").exists():
+        tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+        bad = [f for f in tracked if "__pycache__" in f or f.endswith(".pyc")]
+        assert not bad, f"bytecode versionado: {bad}"

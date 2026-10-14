@@ -1,0 +1,4 @@
+# Linters FIXOS: o CI e a sua máquina usam exatamente as mesmas versões.
+# (O shellcheck do runner era mais antigo que o meu e acusava SC2015, que o 0.11 não acusa.)
+yamllint==1.38.0
+shellcheck-py==0.11.0.1

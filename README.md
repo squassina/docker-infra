@@ -181,6 +181,9 @@ docker-infra/
 ```gitignore
 .env
 **/.env
+__pycache__/
+*.pyc
+.pytest_cache/
 ```
 
 ---
@@ -1304,7 +1307,7 @@ O repositório traz testes e validações que rodam **sem Docker daemon, sem seg
 | Verificação | Onde | O que pega |
 |---|---|---|
 | **yamllint** (`-s`, estrito) | `validate.yml` › lint | YAML mal formado, indentação, chaves duplicadas (inclui os próprios workflows) |
-| **shellcheck** | `validate.yml` › lint | Bugs em `setup.sh`, `backup.sh`, `validate_compose.sh` |
+| **shellcheck** (versão fixa) | `validate.yml` › lint | Bugs em `setup.sh`, `backup.sh`, `update.sh`, `validate_compose.sh`. A versão é fixada em `tests/requirements-lint.txt`: o shellcheck do runner era mais antigo que o do desenvolvedor e acusava `SC2015` (padrão `A && B \|\| C`) que a versão nova não acusa |
 | **Nenhum `.env` versionado** | `validate.yml` › lint | Segredo commitado por engano |
 | **`docker compose config`** em cada stack (todos os profiles) | `validate.yml` › compose | Sintaxe, âncoras/merge keys, interpolação, `variable is not set` |
 | **Guardas `${VAR:?}`** | `scripts/validate_compose.sh` | Remove uma variável obrigatória e exige que o Compose **falhe** |
@@ -1317,7 +1320,8 @@ O repositório traz testes e validações que rodam **sem Docker daemon, sem seg
 **Localmente**
 
 ```bash
-pip install yamllint -r tests/requirements.txt   # + shellcheck e docker compose instalados
+pip install -r tests/requirements.txt -r tests/requirements-lint.txt   # yamllint e shellcheck com as MESMAS versões do CI
+# (docker compose precisa estar instalado para `make compose`)
 make check        # lint + compose + pytest + README
 make images       # (rede + docker buildx) imagens existem para arm64/armv7?
 ```
@@ -1330,6 +1334,8 @@ make images       # (rede + docker buildx) imagens existem para arm64/armv7?
 |---|---|
 | `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` | Login no Docker Hub no job `Images`. Sem eles o job roda anônimo e, se os runners compartilhados baterem no limite de requisições, a imagem aparece como **aviso** (não como falha). |
 | `GITLEAKS_LICENSE` | Só para repositórios de **organização**; contas pessoais não precisam. |
+
+**Runners:** os jobs usam `ubuntu-24.04` (e não `ubuntu-latest`, que migra para o Ubuntu 26 em 19/10/2026). Migre de propósito, rodando o CI numa branch antes.
 
 **Gatilhos:** o `Validate` roda em push na `master` ou `main` e em todo pull request (push em branch de feature sem PR aberto não dispara; abra o PR). O `Images` roda toda segunda-feira às 09:00 UTC (06:00 em Brasília), nos PRs que mexem nos composes e sob demanda (*Actions → Images → Run workflow*). Agendamentos só valem na branch padrão e o GitHub os pausa após 60 dias sem atividade no repositório.
 
