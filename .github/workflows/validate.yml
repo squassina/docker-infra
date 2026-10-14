@@ -97,8 +97,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Gratuito em repositórios pessoais; organizações precisam do segredo GITLEAKS_LICENSE.
-      # (v2 roda em Node 20, removido dos runners em 16/09/2026: use v3.)
+      # Gratuito em repositórios pessoais; organizações precisam de GITLEAKS_LICENSE.
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

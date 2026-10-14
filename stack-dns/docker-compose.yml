@@ -1,6 +1,6 @@
 services:
   pihole-unbound:
-    image: mpgirro/pihole-unbound:2026.09.0   # tag = versão do Pi-hole (rebuild semanal do Unbound); o Dependabot propõe as próximas
+    image: mpgirro/pihole-unbound:2026.09.0   # confirme/atualize a tag em hub.docker.com/r/mpgirro/pihole-unbound
     container_name: pihole_unbound
     hostname: ${NODE_NAME:?defina NODE_NAME no .env}
     restart: unless-stopped
