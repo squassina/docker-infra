@@ -1311,7 +1311,8 @@ O repositório traz testes e validações que rodam **sem Docker daemon, sem seg
 | **pytest** (`tests/`) | `validate.yml` › tests | Labels do Traefik completas, hostnames únicos, `proxy-net` fixada, Traefik ≥ 3.6, **todas as imagens com versão fixa**, **nebula-sync** (sincronização seletiva, sem config de infraestrutura), **socket-proxy** (allowlist: caminhos permitidos/negados, só o cliente conecta, redes internas, `docker.sock` só nos proxies/Portainer) (sem `latest`/`lts`/`stable`), Watchtower ausente, mount `/data` único (hardlinks), variáveis do Pi-hole v6, Recyclarr v8, devices do RK3588, variáveis do Compose presentes no `.env.example` e sem segredos reais |
 | **README em sincronia** | `validate.yml` › docs | Blocos de código do README diferentes dos arquivos |
 | **gitleaks** | `validate.yml` › secrets | Segredos no histórico do git |
-| **Imagens e arquiteturas** | `images.yml` (semanal) | Imagem removida/renomeada ou sem build `arm64`/`arm/v7` |
+| **Workflows** (`tests/test_workflows.py`) | `validate.yml` › tests | Actions em versões que rodam em Node 24 (Node 20 foi removido dos runners em 16/09/2026), `timeout-minutes` em todos os jobs, permissões mínimas, gatilhos (`master`/`main` + PR), `CI ok` cobrindo todos os jobs |
+| **Imagens e arquiteturas** | `images.yml` (semanal + PRs que mexem nos composes) | Imagem removida/renomeada ou sem build `arm64`/`arm/v7`. Limite de requisições do registry vira **aviso** depois de 3 tentativas; tag inexistente reprova |
 
 **Localmente**
 
@@ -1322,6 +1323,15 @@ make images       # (rede + docker buildx) imagens existem para arm64/armv7?
 ```
 
 **Os arquivos são a fonte da verdade.** Os blocos de código deste README (marcados com `<!-- file: caminho -->`) são gerados a partir dos arquivos do repositório. Depois de editar um Compose ou `.env.example`, rode `make sync` para atualizar o README; o CI falha se os dois divergirem.
+
+**Segredos opcionais do repositório** (*Settings → Secrets and variables → Actions*):
+
+| Segredo | Para quê |
+|---|---|
+| `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` | Login no Docker Hub no job `Images`. Sem eles o job roda anônimo e, se os runners compartilhados baterem no limite de requisições, a imagem aparece como **aviso** (não como falha). |
+| `GITLEAKS_LICENSE` | Só para repositórios de **organização**; contas pessoais não precisam. |
+
+**Gatilhos:** o `Validate` roda em push na `master` ou `main` e em todo pull request (push em branch de feature sem PR aberto não dispara; abra o PR). O `Images` roda toda segunda-feira às 09:00 UTC (06:00 em Brasília), nos PRs que mexem nos composes e sob demanda (*Actions → Images → Run workflow*). Agendamentos só valem na branch padrão e o GitHub os pausa após 60 dias sem atividade no repositório.
 
 **Branch protection (recomendado):** em *Settings → Branches*, exija o check **`CI ok`** antes de aceitar merges na branch padrão (`master` ou `main`).
 

@@ -39,12 +39,47 @@ def test_collect_images_assigns_the_right_platform_per_stack():
     assert images[node] == {"linux/arm/v7", "linux/arm64"}
 
 
-def test_check_reports_missing_platform(monkeypatch):
+def test_check_reports_missing_platform_as_error(monkeypatch):
     monkeypatch.setattr(ci, "inspect", lambda image: ({"linux/amd64"}, ""))
-    msgs = ci.check("x/y:1", {"linux/arm64"})
-    assert len(msgs) == 1 and "linux/arm64" in msgs[0]
+    errors, warnings = ci.check("x/y:1", {"linux/arm64"})
+    assert len(errors) == 1 and "linux/arm64" in errors[0] and not warnings
 
 
-def test_check_reports_registry_error(monkeypatch):
+def test_check_reports_missing_tag_as_error(monkeypatch):
     monkeypatch.setattr(ci, "inspect", lambda image: (None, "manifest unknown"))
-    assert ci.check("x/y:1", {"linux/arm64"}) == ["x/y:1: manifest unknown"]
+    assert ci.check("x/y:1", {"linux/arm64"}) == (["x/y:1: manifest unknown"], [])
+
+
+def test_rate_limit_is_a_warning_not_a_failure(monkeypatch):
+    """Runners compartilhados batem no limite do Docker Hub: isso não prova que a tag não existe."""
+    monkeypatch.setattr(ci, "inspect", lambda image: (None, "toomanyrequests: You have reached your pull rate limit"))
+    errors, warnings = ci.check("x/y:1", {"linux/arm64"})
+    assert errors == [] and len(warnings) == 1
+
+
+def test_is_transient_classification():
+    for msg in ("toomanyrequests: rate limit", "429 Too Many Requests", "i/o timeout", "503 Service Unavailable"):
+        assert ci.is_transient(msg), msg
+    for msg in ("manifest unknown", "not found", "denied: requested access to the resource is denied"):
+        assert not ci.is_transient(msg), msg
+
+
+class _Proc:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_inspect_retries_transient_errors_then_succeeds(monkeypatch):
+    calls, naps = [], []
+    seq = [_Proc(1, err="toomanyrequests"), _Proc(1, err="i/o timeout"),
+           _Proc(0, out='{"manifests":[{"platform":{"os":"linux","architecture":"arm64"}}]}')]
+    monkeypatch.setattr(ci.subprocess, "run", lambda *a, **k: calls.append(1) or seq[len(calls) - 1])
+    plats, err = ci.inspect("x/y:1", sleep=naps.append)
+    assert plats == {"linux/arm64"} and err == "" and len(calls) == 3 and naps == [2, 4]
+
+
+def test_inspect_does_not_retry_definitive_errors(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ci.subprocess, "run", lambda *a, **k: calls.append(1) or _Proc(1, err="manifest unknown"))
+    plats, err = ci.inspect("x/y:1", sleep=lambda s: None)
+    assert plats is None and err == "manifest unknown" and len(calls) == 1

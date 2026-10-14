@@ -17,10 +17,11 @@ jobs:
   lint:
     name: Lint (yamllint, shellcheck, .env)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -42,12 +43,13 @@ jobs:
   compose:
     name: Compose config (${{ matrix.stack }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         stack: [stack-management, stack-media, stack-monitoring, stack-dns]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: docker compose config + guardas de variáveis obrigatórias
         run: scripts/validate_compose.sh ${{ matrix.stack }}
@@ -55,10 +57,11 @@ jobs:
   tests:
     name: Testes de convenções (pytest)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -71,10 +74,11 @@ jobs:
   docs:
     name: README em sincronia com os arquivos
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -83,21 +87,28 @@ jobs:
   secrets:
     name: Varredura de segredos (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read      # o gitleaks lista os commits do PR pela API
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # Gratuito em repositórios pessoais; organizações precisam de GITLEAKS_LICENSE.
-      - uses: gitleaks/gitleaks-action@v2
+      # Gratuito em repositórios pessoais; organizações precisam do segredo GITLEAKS_LICENSE.
+      # (v2 roda em Node 20, removido dos runners em 16/09/2026: use v3.)
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   ci-ok:
     name: CI ok
     if: always()
     needs: [lint, compose, tests, docs, secrets]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Todos os jobs passaram?
         run: |
