@@ -189,7 +189,7 @@ services:
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
   homepage:
-    image: ghcr.io/gethomepage/homepage:v2.4.0
+    image: ghcr.io/gethomepage/homepage:v2.6.0
     container_name: homepage
     restart: unless-stopped
     networks:
