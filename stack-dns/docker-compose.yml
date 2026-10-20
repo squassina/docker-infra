@@ -57,7 +57,7 @@ services:
 
   portainer-agent:
     profiles: ["agent"]
-    image: portainer/agent:2.45.1       # sempre a MESMA versão do Portainer Server (stack-management)
+    image: portainer/agent:2.45.2       # sempre a MESMA versão do Portainer Server (stack-management)
     container_name: portainer_agent
     restart: unless-stopped
     mem_limit: 64m
