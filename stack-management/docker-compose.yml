@@ -142,7 +142,7 @@ services:
   # registros DNS locais. Edite essas coisas SÓ no primário. Configuração de infraestrutura
   # (upstreams, DNSSEC, listening mode...) NÃO é sincronizada: ela vem das variáveis do Compose de cada nó.
   nebula-sync:
-    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.3
     container_name: nebula-sync
     restart: unless-stopped
     mem_limit: 128m
